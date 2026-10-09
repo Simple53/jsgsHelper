@@ -25,7 +25,7 @@ python -m http.server 4173 --bind 127.0.0.1
 安装一次依赖：
 
 ```powershell
-python -m pip install faster-whisper
+python -m pip install -r requirements-subtitles.txt
 ```
 
 先试跑一讲：
@@ -35,10 +35,10 @@ python generate_subtitles.py --course 1 --limit 1
 python build_webbook.py
 ```
 
-CPU 默认使用 `small + int8`。有 NVIDIA GPU 时可使用：
+CPU 默认使用低内存参数的 `small + int8`（1 分钟分块、单束搜索）。有 NVIDIA GPU 时可提高搜索质量与吞吐：
 
 ```powershell
-python generate_subtitles.py --device cuda --compute-type float16
+python generate_subtitles.py --model small --device cuda --compute-type float16 --chunk-minutes 5 --beam-size 5
 python build_webbook.py
 ```
 

@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         江苏高校岗培学习平台 - 全自动多集连播与无人值守助手
+// @name         江苏高校岗培 - 5门课程全自动跨课连播与自定义倍速助手(V3.1)
 // @namespace    https://antigravity.deepmind/
-// @version      2.0.0
-// @description  专为江苏省高校师资培训平台打造：自动多集连播、防切屏暂停、自动倍速(2.0x)、自动静音、秒关防挂机弹窗，全自动刷满学时
+// @version      3.1.0
+// @description  5门培训课程全自动按序跨课连播、支持任意自定义倍速(持久化记忆)、防切屏暂停、自动静音挂机、秒关弹窗，全自动通关学时
 // @author       Antigravity
 // @match        *://jsgs.study.gspxonline.com/*
 // @match        *://*.gspxonline.com/*
@@ -12,11 +12,11 @@
 
 (function () {
     'use strict';
-    console.log("[自动学习助手] 模块加载，防切屏拦截引擎启动...");
+    console.log("[自动通关助手 V3.1] 启动：防切屏/跨课程调度引擎就绪...");
 
-    // ==========================================
-    // 1. 核心黑科技：彻底破解后台防切屏暂停
-    // ==========================================
+    // =========================================================================
+    // 1. 核心破除限制：防切屏、防失焦、后台不暂停
+    // =========================================================================
     try {
         Object.defineProperty(document, 'hidden', { get: () => false });
         Object.defineProperty(document, 'visibilityState', { get: () => 'visible' });
@@ -27,117 +27,202 @@
         document.addEventListener('mouseleave', e => e.stopImmediatePropagation(), true);
     } catch (e) {}
 
-    // 全局控制状态
+    // =========================================================================
+    // 2. 5 门官方培训核心考试课程标准队列
+    // =========================================================================
+    const COURSE_QUEUE = [
+        { id: "991", name: "高等教育学" },
+        { id: "1088", name: "高等教育心理学" },
+        { id: "1072", name: "高等教育政策与法律" },
+        { id: "993", name: "高校教师职业道德规范" },
+        { id: "994", name: "习近平总书记教育重要论述" }
+    ];
+
+    // 本地持久化配置读取
     const config = {
-        autoNext: true,       // 自动切换下一集
-        rate: 2.0,            // 播放倍速 (2.0x)
-        autoMute: true,       // 自动静音挂机
-        autoDismiss: true     // 自动关闭弹窗
+        speed: parseFloat(localStorage.getItem('gspx_custom_speed') || '2.0'),
+        autoNext: localStorage.getItem('gspx_auto_next') !== 'false',
+        crossCourse: localStorage.getItem('gspx_cross_course') !== 'false',
+        autoMute: localStorage.getItem('gspx_auto_mute') !== 'false',
+        autoDismiss: true
     };
 
     let checkTimer = null;
-    let isSwitching = false;
+    let isNavigating = false;
+    let listCountdown = 3;
+    let listCountdownTimer = null;
 
-    // ==========================================
-    // 2. 视频与进度监控核心引擎
-    // ==========================================
+    // 获取当前所在的课程 ID
+    function getCurrentCourseId() {
+        const hash = window.location.hash || '';
+        const search = window.location.search || '';
+        const match = hash.match(/\/learn\/(\d+)/) || search.match(/courseId=(\d+)/);
+        return match ? match[1] : null;
+    }
+
+    // =========================================================================
+    // 3. 主循环心跳监控
+    // =========================================================================
     function mainLoop() {
-        const video = document.querySelector('video');
+        // 自动关闭挂机确认弹窗
+        if (config.autoDismiss) dismissDialogs();
 
-        // 2.1 自动关闭各类挂机弹窗与提示
-        if (config.autoDismiss) {
-            dismissDialogs();
+        const curHash = window.location.hash || '';
+
+        // 场景 A：位于课程大厅列表页 (#/study/list 或 #/study)
+        if (curHash.includes('/study/list') || curHash === '#/study' || curHash === '') {
+            handleCourseListPage();
+            return;
         }
 
+        // 场景 B：位于具体的课程学习页 (#/study/learn/...)
+        handleLearnPage();
+    }
+
+    // 场景 A 处理：在课程大厅 (#/study/list)，自动按序进入第一门课程
+    function handleCourseListPage() {
+        if (isNavigating) return;
+
+        const firstCourse = COURSE_QUEUE[0];
+        showStatus(`检测到在课程大厅，${listCountdown} 秒后自动开启第 1 门课程...`);
+
+        if (!listCountdownTimer) {
+            listCountdownTimer = setInterval(() => {
+                listCountdown--;
+                if (listCountdown <= 0) {
+                    clearInterval(listCountdownTimer);
+                    listCountdownTimer = null;
+                    isNavigating = true;
+                    showStatus(`正在跳转至第 1 门:《${firstCourse.name}》...`);
+                    window.location.href = `http://jsgs.study.gspxonline.com/resource/index?route=/study/course/${firstCourse.id}#/study/learn/${firstCourse.id}`;
+                } else {
+                    showStatus(`检测到在课程大厅，${listCountdown} 秒后自动开启第 1 门课程...`);
+                }
+            }, 1000);
+        }
+    }
+
+    // 场景 B 处理：在学习页中自动连播与维持自定义倍速
+    function handleLearnPage() {
+        if (listCountdownTimer) {
+            clearInterval(listCountdownTimer);
+            listCountdownTimer = null;
+        }
+
+        const video = document.querySelector('video');
         if (!video) return;
 
-        // 2.2 确保视频处于播放状态
-        if (video.paused && !video.ended && !isSwitching) {
-            video.muted = config.autoMute;
-            video.playbackRate = config.rate;
-            video.play().catch(() => {});
+        // 持续锁定用户自定义的播放速度
+        if (Math.abs(video.playbackRate - config.speed) > 0.05) {
+            video.playbackRate = config.speed;
         }
-
-        // 2.3 保持倍速与静音设置
-        if (video.playbackRate !== config.rate) {
-            video.playbackRate = config.rate;
-        }
+        // 持续静音
         if (config.autoMute && !video.muted) {
             video.muted = true;
         }
 
-        // 2.4 检查当前进度并更新 UI
+        // 若被意外暂停，自动触发播放
+        if (video.paused && !video.ended && !isNavigating) {
+            video.play().catch(() => {});
+        }
+
+        // 实时更新进度百分比
         const duration = video.duration || 0;
         const curTime = video.currentTime || 0;
         const percent = duration > 0 ? (curTime / duration) * 100 : 0;
         updateUI(percent);
 
-        // 2.5 判断本集是否已播完（已到末尾或 >= 99% 或 video.ended）
-        if ((percent >= 99 || video.ended) && config.autoNext && !isSwitching) {
-            console.log("[自动学习助手] 当前课时已学完，准备自动跳转下一集...");
-            isSwitching = true;
-            switchToNextLesson();
+        // 检查本课是否播放完毕（进度达到 99% 或触发 video.ended）
+        if ((percent >= 99 || video.ended) && config.autoNext && !isNavigating) {
+            isNavigating = true;
+            console.log("[自动通关助手] 当前小节已学满，准备切换下一节...");
+            switchToNextLessonOrCourse();
         }
     }
 
-    // ==========================================
-    // 3. 自动查找并点击下一节课时
-    // ==========================================
-    function switchToNextLesson() {
-        showStatus("本节已学完，1.5 秒后自动播放下一节...");
+    // =========================================================================
+    // 4. 课时切换与跨课程跳转引擎
+    // =========================================================================
+    function switchToNextLessonOrCourse() {
+        showStatus("当前课时完成，正在定位下一节...");
 
         setTimeout(() => {
-            // 获取左侧所有的课时列表元素
+            // 获取左侧所有的课时项
             const allItems = Array.from(document.querySelectorAll('li, div, a')).filter(el => {
                 const t = el.innerText || '';
-                const hasLessonKeyword = t.includes('节') || t.includes('讲') || t.includes('%');
+                const hasKeyword = t.includes('节') || t.includes('讲') || t.includes('%');
                 const isLeaf = el.children.length <= 4 && el.offsetHeight > 0;
-                return isLeaf && hasLessonKeyword;
+                return isLeaf && hasKeyword;
             });
 
-            // 查找当前激活的节点
+            // 查找当前选中的课时
             const activeIndex = allItems.findIndex(el => {
                 const cls = (el.className || '') + ' ' + (el.parentElement ? el.parentElement.className : '');
                 return cls.includes('active') || cls.includes('current') || cls.includes('selected');
             });
 
-            // 优先查找下一个节点
+            // 1. 优先在本课程内找下一个尚未达到 100% 的课时
             let nextNode = null;
             if (activeIndex >= 0 && activeIndex < allItems.length - 1) {
                 nextNode = allItems[activeIndex + 1];
             } else {
-                // 如果当前未高亮，查找第一个进度未达 100% 的课时
-                nextNode = allItems.find(el => {
-                    const t = el.innerText;
-                    return !t.includes('100%');
-                });
+                // 如果当前已经是末尾，查找本课程内是否有遗漏的未达标课时
+                nextNode = allItems.find(el => !el.innerText.includes('100%'));
             }
 
-            if (nextNode) {
-                console.log("[自动学习助手] 正在切换至:", nextNode.innerText.trim().slice(0, 20));
+            if (nextNode && !isAllLessonsFinished(allItems)) {
+                console.log("[自动通关助手] 播放本门课程下一讲:", nextNode.innerText.trim().slice(0, 20));
                 nextNode.scrollIntoView({ behavior: 'smooth', block: 'center' });
                 nextNode.click();
 
-                // 2 秒后重置 switching 状态，等待新视频加载
                 setTimeout(() => {
-                    isSwitching = false;
+                    isNavigating = false;
                     const v = document.querySelector('video');
                     if (v) {
                         v.muted = config.autoMute;
-                        v.playbackRate = config.rate;
+                        v.playbackRate = config.speed;
                         v.play().catch(() => {});
                     }
-                }, 2500);
+                }, 2200);
             } else {
-                showStatus("恭喜！当前课程所有课时已全部播放完毕！");
-                isSwitching = false;
+                // 2. 本门课程所有课时均已学满，触发跨课程无缝跳转！
+                handleCrossCourseNext();
             }
-        }, 1500);
+        }, 1200);
     }
 
-    // ==========================================
-    // 4. 秒级自动关闭弹窗
-    // ==========================================
+    function isAllLessonsFinished(items) {
+        if (!items || items.length === 0) return false;
+        const uncompleted = items.filter(el => !el.innerText.includes('100%'));
+        return uncompleted.length === 0;
+    }
+
+    // 跨课程跳转到 5 门课程队列中的下一门
+    function handleCrossCourseNext() {
+        const curId = getCurrentCourseId();
+        const curIdx = COURSE_QUEUE.findIndex(c => c.id === String(curId));
+
+        if (config.crossCourse && curIdx >= 0 && curIdx < COURSE_QUEUE.length - 1) {
+            const nextCourse = COURSE_QUEUE[curIdx + 1];
+            showStatus(`本课程已全满！3秒后进入下一门:《${nextCourse.name}》...`);
+            console.log(`[自动通关助手] 跨课切换 [${curIdx + 2}/5]: ${nextCourse.name}`);
+
+            setTimeout(() => {
+                window.location.href = `http://jsgs.study.gspxonline.com/resource/index?route=/study/course/${nextCourse.id}#/study/learn/${nextCourse.id}`;
+            }, 3000);
+        } else if (curIdx >= COURSE_QUEUE.length - 1) {
+            showStatus("5 门课程所有课时已全部圆满学完！");
+            isNavigating = false;
+            alert("【提示】全部 5 门培训课程的视频已全部自动连播学满 100%！");
+        } else {
+            showStatus("本课程已学完。跨课连播已关闭。");
+            isNavigating = false;
+        }
+    }
+
+    // =========================================================================
+    // 5. 自动秒关各类防挂机弹窗
+    // =========================================================================
     function dismissDialogs() {
         const buttons = Array.from(document.querySelectorAll('button, .el-button, span, a')).filter(btn => {
             const t = (btn.innerText || '').trim();
@@ -147,75 +232,145 @@
         for (const btn of buttons) {
             const modal = btn.closest('.el-dialog, .el-message-box, .dialog, .modal, [role="dialog"]');
             if (modal) {
-                console.log("[自动学习助手] 自动关闭防挂机弹窗:", btn.innerText);
+                console.log("[自动通关助手] 自动关闭防挂机弹窗:", btn.innerText);
                 btn.click();
             }
         }
     }
 
-    // ==========================================
-    // 5. 页面悬浮控制面板 (HUD)
-    // ==========================================
+    // =========================================================================
+    // 6. 悬浮状态与自定义倍速控制卡片 (HUD)
+    // =========================================================================
     function createUI() {
         if (document.getElementById('study-assistant-hud')) return;
+        const curId = getCurrentCourseId();
+        const curCourse = COURSE_QUEUE.find(c => c.id === String(curId)) || COURSE_QUEUE[0];
+
         const hud = document.createElement('div');
         hud.id = 'study-assistant-hud';
         hud.innerHTML = `
-            <div style="font-weight: bold; font-size: 13px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
-                <span style="color: #0284c7;">⚡ 岗培全自动连播助手</span>
-                <span id="hud-pct" style="background: #10b981; color: #fff; padding: 2px 6px; border-radius: 4px; font-size: 11px;">0%</span>
+            <div style="font-weight: 600; font-size: 13px; margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center;">
+                <span style="color: #0284c7;">5门课程自动通关巡航助手</span>
+                <span id="hud-pct" style="background: #059669; color: #fff; padding: 2px 6px; border-radius: 4px; font-size: 11px;">0%</span>
             </div>
-            <div id="hud-status" style="font-size: 11px; color: #64748b; margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">自动连播挂机运行中...</div>
-            <div style="display: flex; gap: 6px; margin-bottom: 6px;">
-                <button id="btn-toggle-next" style="flex: 1; padding: 5px; font-size: 11px; border: 1px solid #cbd5e1; border-radius: 4px; cursor: pointer; background: #e0f2fe; color: #0369a1; font-weight: bold;">连播: 开启</button>
-                <button id="btn-rate" style="flex: 1; padding: 5px; font-size: 11px; border: 1px solid #cbd5e1; border-radius: 4px; cursor: pointer; background: #f8fafc; color: #334155;">倍速: 2.0x</button>
-                <button id="btn-mute" style="flex: 1; padding: 5px; font-size: 11px; border: 1px solid #cbd5e1; border-radius: 4px; cursor: pointer; background: #dcfce7; color: #15803d;">静音: 是</button>
+            
+            <div id="hud-course-name" style="font-size: 11px; color: #1e293b; font-weight: 600; margin-bottom: 4px;">当前课程: ${curCourse.name}</div>
+            <div id="hud-status" style="font-size: 11px; color: #64748b; margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">自动连播运行中...</div>
+
+            <!-- 5门课程巡航指示器 -->
+            <div style="display: flex; gap: 4px; margin-bottom: 8px;">
+                ${COURSE_QUEUE.map((c, i) => `
+                    <div id="c-step-${c.id}" style="flex: 1; text-align: center; font-size: 10px; padding: 3px 0; border-radius: 3px; background: ${c.id === String(curId) ? '#0284c7; color: #fff; font-weight: 600;' : '#e2e8f0; color: #64748b;'}; cursor: pointer;" title="点击直达: ${c.name}" onclick="location.href='http://jsgs.study.gspxonline.com/resource/index?route=/study/course/${c.id}#/study/learn/${c.id}'">
+                        课${i+1}
+                    </div>
+                `).join('')}
             </div>
-            <div style="font-size: 10px; color: #94a3b8; text-align: right;">已开启防切屏与弹窗秒关</div>
+
+            <!-- 自定义速度控制区 -->
+            <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px; margin-bottom: 8px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                    <span style="font-size: 11px; color: #475569; font-weight: 500;">自定义播放倍速:</span>
+                    <div style="display: flex; align-items: center; gap: 4px;">
+                        <input id="input-speed" type="number" step="0.1" min="0.5" max="16.0" value="${config.speed}" style="width: 52px; padding: 2px 4px; border: 1px solid #cbd5e1; border-radius: 3px; font-size: 11px; text-align: center; font-weight: 600; color: #0284c7;">
+                        <span style="font-size: 11px; color: #64748b;">×</span>
+                    </div>
+                </div>
+                <div style="display: flex; gap: 4px;">
+                    <button class="btn-preset-speed" data-rate="1.0" style="flex:1; padding: 2px 0; font-size: 10px; border: 1px solid #cbd5e1; border-radius: 3px; cursor: pointer; background: #fff;">1.0x</button>
+                    <button class="btn-preset-speed" data-rate="1.5" style="flex:1; padding: 2px 0; font-size: 10px; border: 1px solid #cbd5e1; border-radius: 3px; cursor: pointer; background: #fff;">1.5x</button>
+                    <button class="btn-preset-speed" data-rate="2.0" style="flex:1; padding: 2px 0; font-size: 10px; border: 1px solid #cbd5e1; border-radius: 3px; cursor: pointer; background: #fff;">2.0x</button>
+                    <button class="btn-preset-speed" data-rate="2.5" style="flex:1; padding: 2px 0; font-size: 10px; border: 1px solid #cbd5e1; border-radius: 3px; cursor: pointer; background: #fff;">2.5x</button>
+                    <button class="btn-preset-speed" data-rate="3.0" style="flex:1; padding: 2px 0; font-size: 10px; border: 1px solid #cbd5e1; border-radius: 3px; cursor: pointer; background: #fff;">3.0x</button>
+                </div>
+            </div>
+
+            <!-- 控制开关 -->
+            <div style="display: flex; gap: 4px;">
+                <button id="btn-toggle-next" style="flex: 1; padding: 4px; font-size: 11px; border: 1px solid #cbd5e1; border-radius: 4px; cursor: pointer; background: ${config.autoNext ? '#e0f2fe' : '#f1f5f9'}; color: ${config.autoNext ? '#0369a1' : '#64748b'}; font-weight: 500;">
+                    小节连播: ${config.autoNext ? '开' : '关'}
+                </button>
+                <button id="btn-toggle-cross" style="flex: 1.2; padding: 4px; font-size: 11px; border: 1px solid #cbd5e1; border-radius: 4px; cursor: pointer; background: ${config.crossCourse ? '#e0f2fe' : '#f1f5f9'}; color: ${config.crossCourse ? '#0369a1' : '#64748b'}; font-weight: 500;">
+                    跨课连播: ${config.crossCourse ? '开' : '关'}
+                </button>
+                <button id="btn-toggle-mute" style="flex: 0.8; padding: 4px; font-size: 11px; border: 1px solid #cbd5e1; border-radius: 4px; cursor: pointer; background: ${config.autoMute ? '#dcfce7' : '#fee2e2'}; color: ${config.autoMute ? '#15803d' : '#b91c1c'}; font-weight: 500;">
+                    静音: ${config.autoMute ? '是' : '否'}
+                </button>
+            </div>
+            <div style="font-size: 10px; color: #94a3b8; text-align: right; margin-top: 6px;">防切屏与弹窗秒关已开启</div>
         `;
         Object.assign(hud.style, {
             position: 'fixed',
             top: '70px',
             right: '25px',
-            width: '260px',
+            width: '275px',
             background: '#ffffff',
-            boxShadow: '0 10px 25px -5px rgba(0,0,0,0.2)',
+            boxShadow: '0 10px 25px -5px rgba(0,0,0,0.18)',
             border: '1px solid #e2e8f0',
-            borderRadius: '8px',
+            borderRadius: '10px',
             padding: '12px',
             zIndex: '99999999',
-            fontFamily: 'sans-serif',
+            fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
             color: '#1e293b'
         });
         document.body.appendChild(hud);
 
-        // 绑定按钮事件
+        // 自定义倍速输入框绑定
+        const speedInput = document.getElementById('input-speed');
+        speedInput.addEventListener('change', () => {
+            const val = parseFloat(speedInput.value);
+            if (val > 0 && val <= 16) {
+                applySpeed(val);
+            }
+        });
+
+        // 预设倍速按钮绑定
+        document.querySelectorAll('.btn-preset-speed').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const r = parseFloat(btn.dataset.rate);
+                applySpeed(r);
+                speedInput.value = r;
+            });
+        });
+
+        // 小节连播开关
         document.getElementById('btn-toggle-next').addEventListener('click', () => {
             config.autoNext = !config.autoNext;
+            localStorage.setItem('gspx_auto_next', config.autoNext);
             const btn = document.getElementById('btn-toggle-next');
-            btn.innerText = `连播: ${config.autoNext ? '开启' : '关闭'}`;
+            btn.innerText = `小节连播: ${config.autoNext ? '开' : '关'}`;
             btn.style.background = config.autoNext ? '#e0f2fe' : '#f1f5f9';
             btn.style.color = config.autoNext ? '#0369a1' : '#64748b';
         });
 
-        document.getElementById('btn-rate').addEventListener('click', () => {
-            const rates = [1.0, 1.25, 1.5, 2.0];
-            const nextIdx = (rates.indexOf(config.rate) + 1) % rates.length;
-            config.rate = rates[nextIdx];
-            document.getElementById('btn-rate').innerText = `倍速: ${config.rate}x`;
-            const v = document.querySelector('video');
-            if (v) v.playbackRate = config.rate;
+        // 跨课连播开关
+        document.getElementById('btn-toggle-cross').addEventListener('click', () => {
+            config.crossCourse = !config.crossCourse;
+            localStorage.setItem('gspx_cross_course', config.crossCourse);
+            const btn = document.getElementById('btn-toggle-cross');
+            btn.innerText = `跨课连播: ${config.crossCourse ? '开' : '关'}`;
+            btn.style.background = config.crossCourse ? '#e0f2fe' : '#f1f5f9';
+            btn.style.color = config.crossCourse ? '#0369a1' : '#64748b';
         });
 
-        document.getElementById('btn-mute').addEventListener('click', () => {
+        // 静音开关
+        document.getElementById('btn-toggle-mute').addEventListener('click', () => {
             config.autoMute = !config.autoMute;
-            const btn = document.getElementById('btn-mute');
+            localStorage.setItem('gspx_auto_mute', config.autoMute);
+            const btn = document.getElementById('btn-toggle-mute');
             btn.innerText = `静音: ${config.autoMute ? '是' : '否'}`;
             btn.style.background = config.autoMute ? '#dcfce7' : '#fee2e2';
             btn.style.color = config.autoMute ? '#15803d' : '#b91c1c';
             const v = document.querySelector('video');
             if (v) v.muted = config.autoMute;
         });
+    }
+
+    function applySpeed(rate) {
+        config.speed = rate;
+        localStorage.setItem('gspx_custom_speed', rate);
+        const v = document.querySelector('video');
+        if (v) v.playbackRate = rate;
+        showStatus(`已锁定播放速度为 ${rate}x`);
     }
 
     function updateUI(percent) {
@@ -228,16 +383,16 @@
         if (sEl) sEl.innerText = text;
     }
 
-    // 页面就绪后启动主引擎
-    window.addEventListener('DOMContentLoaded', () => {
-        createUI();
-        if (checkTimer) clearInterval(checkTimer);
-        checkTimer = setInterval(mainLoop, 1000);
-    });
-
+    // 页面初始化
     if (document.readyState !== 'loading') {
         createUI();
         if (checkTimer) clearInterval(checkTimer);
         checkTimer = setInterval(mainLoop, 1000);
+    } else {
+        window.addEventListener('DOMContentLoaded', () => {
+            createUI();
+            if (checkTimer) clearInterval(checkTimer);
+            checkTimer = setInterval(mainLoop, 1000);
+        });
     }
 })();
