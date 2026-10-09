@@ -3,6 +3,7 @@
 from pathlib import Path
 import json
 import os
+import re
 import shutil
 
 ROOT = Path(__file__).resolve().parent
@@ -12,8 +13,12 @@ if OUT.exists():
     shutil.rmtree(OUT)
 OUT.mkdir()
 
-for name in ("index.html", "webbook.css", "webbook.js", "course_data.js"):
+for name in ("index.html", "webbook.css", "webbook.js"):
     shutil.copy2(ROOT / name, OUT / name)
+
+course_data = (ROOT / "course_data.js").read_text(encoding="utf-8")
+course_data = re.sub(r'("onlineUrl"\s*:\s*)"[^"]*"', r'\1""', course_data)
+(OUT / "course_data.js").write_text(course_data, encoding="utf-8")
 
 for name in ("subtitles",):
     source = ROOT / name
@@ -34,4 +39,3 @@ config = {
 )
 (OUT / ".nojekyll").touch()
 print(f"Prepared {OUT}")
-
