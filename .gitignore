@@ -1,0 +1,9 @@
+videos/
+_site/
+__pycache__/
+*.pyc
+.env
+.env.*
+config.local.js
+output/
+
