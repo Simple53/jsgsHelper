@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         江苏高校岗培 - 5门课程全自动跨课连播与自主掌控助手(V3.5金牌防切屏版)
+// @name         江苏高校岗培 - 全自动跨课连播与多窗口学习助手(V4.0)
 // @namespace    https://github.com/Simple53/jsgsHelper
-// @version      3.5.0
-// @description  彻底终结切换标签页暂停(拔除系统visibilitychange/blur监听、WebAudio音频保活防休眠)、解除进度条任意拖动限制、支持主开关一键掌控、支持结尾静音驻留补时与播完即切、5门课程自动跨课连播
+// @version      4.0.0
+// @description  彻底终结切屏/失焦/最小化暂停(EventTarget级拦截+捕获阶段阻断+WebAudio保活)、支持多窗口同时学习(BroadcastChannel隔离+会话冲突拦截+自动关闭冲突弹窗)、解除进度条拖动限制、自由倍速、5门课程自动跨课连播
 // @author       Simple53
 // @match        *://jsgs.study.gspxonline.com/*
 // @match        *://*.gspxonline.com/*
@@ -12,101 +12,132 @@
 
 (function () {
     'use strict';
-    console.log("[jsgsHelper V3.5] 启动：最高级防切屏与全自动巡航引擎已加载...");
+    console.log("[jsgsHelper V4.0] 启动：防切屏 + 多窗口并行学习引擎已加载...");
 
     // =========================================================================
-    // 0. 主页面上下文核心注入：从底层彻底阻断切屏暂停信号
+    // 0. 主页面上下文核心注入：从底层彻底阻断切屏暂停 + 多窗口冲突
     // =========================================================================
     const injectionCode = `
     (function() {
-        console.log("[jsgsHelper 内核] 正在安装防切屏拦截器与媒体控制增强...");
+        console.log("[jsgsHelper 内核] 正在安装防切屏拦截器、多窗口隔离层与媒体控制增强...");
 
         window._masterEnabled = localStorage.getItem('gspx_master_enabled') !== 'false';
         window._targetSpeed = parseFloat(localStorage.getItem('gspx_custom_speed') || '1.0');
         window._allowUserPause = false;
         window._isSeeking = false;
+        window._tabId = 'tab_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
 
-        // -------------------------------------------------------------
-        // 核心突破 1：全局拔除 visibilitychange 与 blur 监听器的注册权限！
-        // 任何页面脚本试图监听切屏/失焦，直接静默拦截丢弃，使其完全无法得知切屏事件！
-        // -------------------------------------------------------------
-        const origAddEventListener = EventTarget.prototype.addEventListener;
+        // =============================================================
+        // 核心突破 1：全局拔除切屏/失焦/跨标签通信监听器的注册权限
+        // =============================================================
+        var origAddEventListener = EventTarget.prototype.addEventListener;
+        var BLOCKED_DOC_WIN_EVENTS = {
+            'visibilitychange': true, 'webkitvisibilitychange': true,
+            'blur': true, 'focusout': true, 'focusin': true,
+            'pagehide': true, 'pageshow': true,
+            'freeze': true, 'resume': true
+        };
+
         EventTarget.prototype.addEventListener = function(type, listener, options) {
-            if (type === 'visibilitychange' || type === 'webkitvisibilitychange') {
-                console.log("[jsgsHelper] 成功拦截并丢弃 visibilitychange 监听器注册！");
+            if (BLOCKED_DOC_WIN_EVENTS[type] && (this === window || this === document || this === document.documentElement)) {
+                console.log("[jsgsHelper] 拦截并丢弃 " + type + " 监听器注册");
                 return;
             }
-            if ((type === 'blur' || type === 'focusout') && (this === window || this === document)) {
-                console.log("[jsgsHelper] 成功拦截并丢弃 window/document 失焦监听器注册！");
+            if (type === 'storage' && this === window) {
+                console.log("[jsgsHelper] 拦截 storage 事件监听 (多窗口隔离)");
                 return;
             }
             if (type === 'ratechange' && listener && window._masterEnabled) {
-                const fnStr = listener.toString();
+                var fnStr = listener.toString();
                 if (fnStr.includes('playbackRate=1') || fnStr.includes('playbackRate = 1') || fnStr.includes('1!==') || fnStr.includes('1 !==')) {
-                    console.log("[jsgsHelper] 成功拔除平台 lockPlaybackRate 监听器！");
+                    console.log("[jsgsHelper] 拔除平台 lockPlaybackRate 监听器");
                     return;
                 }
             }
             return origAddEventListener.apply(this, arguments);
         };
 
-        // -------------------------------------------------------------
-        // 核心突破 2：完全覆写 Document 与 Window 的可见性与焦点状态
-        // -------------------------------------------------------------
+        // =============================================================
+        // 核心突破 2：捕获阶段事件阻断 (双保险)
+        // 即使有监听器在拦截前已注册，也在捕获阶段彻底阻止事件传播
+        // =============================================================
+        ['visibilitychange', 'webkitvisibilitychange'].forEach(function(evt) {
+            origAddEventListener.call(document, evt, function(e) {
+                e.stopImmediatePropagation(); e.preventDefault(); e.stopPropagation();
+            }, true);
+            origAddEventListener.call(window, evt, function(e) {
+                e.stopImmediatePropagation(); e.preventDefault(); e.stopPropagation();
+            }, true);
+        });
+        ['blur', 'focusout', 'pagehide'].forEach(function(evt) {
+            origAddEventListener.call(window, evt, function(e) {
+                e.stopImmediatePropagation(); e.stopPropagation();
+            }, true);
+            origAddEventListener.call(document, evt, function(e) {
+                e.stopImmediatePropagation(); e.stopPropagation();
+            }, true);
+        });
+
+        // =============================================================
+        // 核心突破 3：完全覆写可见性与焦点状态 + 属性 setter 拦截
+        // =============================================================
         try {
-            Object.defineProperty(Document.prototype, 'hidden', { get: () => false, configurable: true });
-            Object.defineProperty(document, 'hidden', { get: () => false, configurable: true });
-            Object.defineProperty(Document.prototype, 'visibilityState', { get: () => 'visible', configurable: true });
-            Object.defineProperty(document, 'visibilityState', { get: () => 'visible', configurable: true });
-            Object.defineProperty(Document.prototype, 'webkitHidden', { get: () => false, configurable: true });
-            Object.defineProperty(Document.prototype, 'webkitVisibilityState', { get: () => 'visible', configurable: true });
-            Document.prototype.hasFocus = () => true;
-            document.hasFocus = () => true;
-            window.onblur = null;
-            document.onvisibilitychange = null;
+            Object.defineProperty(Document.prototype, 'hidden', { get: function() { return false; }, configurable: true });
+            Object.defineProperty(document, 'hidden', { get: function() { return false; }, configurable: true });
+            Object.defineProperty(Document.prototype, 'visibilityState', { get: function() { return 'visible'; }, configurable: true });
+            Object.defineProperty(document, 'visibilityState', { get: function() { return 'visible'; }, configurable: true });
+            Object.defineProperty(Document.prototype, 'webkitHidden', { get: function() { return false; }, configurable: true });
+            Object.defineProperty(Document.prototype, 'webkitVisibilityState', { get: function() { return 'visible'; }, configurable: true });
+            Document.prototype.hasFocus = function() { return true; };
+            document.hasFocus = function() { return true; };
+
+            // 阻止通过属性赋值设置失焦/可见性回调
+            Object.defineProperty(document, 'onvisibilitychange', { get: function() { return null; }, set: function() {}, configurable: true });
+            Object.defineProperty(window, 'onblur', { get: function() { return null; }, set: function() {}, configurable: true });
+            Object.defineProperty(window, 'onfocus', { get: function() { return null; }, set: function() {}, configurable: true });
+            Object.defineProperty(document, 'onblur', { get: function() { return null; }, set: function() {}, configurable: true });
+            Object.defineProperty(document, 'onfocus', { get: function() { return null; }, set: function() {}, configurable: true });
         } catch(e) {}
 
-        // -------------------------------------------------------------
-        // 核心突破 3：Chrome 后台保活机制 (Web Audio API 极微弱音频保活)
-        // 解决浏览器在标签页置于后台时将定时器与视频流休眠挂起的底层限制
-        // -------------------------------------------------------------
+        // =============================================================
+        // 核心突破 4：Chrome 后台保活 (Web Audio API 极微弱音频保活)
+        // =============================================================
         try {
-            const AudioContext = window.AudioContext || window.webkitAudioContext;
-            if (AudioContext) {
-                const actx = new AudioContext();
-                const osc = actx.createOscillator();
-                const gain = actx.createGain();
-                gain.gain.value = 0.00001; // 人耳完全无感，但让浏览器将本标签页标记为“活跃音频线程”
+            var AudioCtx = window.AudioContext || window.webkitAudioContext;
+            if (AudioCtx) {
+                var actx = new AudioCtx();
+                var osc = actx.createOscillator();
+                var gain = actx.createGain();
+                gain.gain.value = 0.00001;
                 osc.connect(gain);
                 gain.connect(actx.destination);
                 osc.start();
                 if (actx.state === 'suspended') {
-                    const resume = () => { actx.resume(); window.removeEventListener('click', resume); };
-                    window.addEventListener('click', resume);
+                    var resumeAudio = function() { actx.resume(); window.removeEventListener('click', resumeAudio); };
+                    origAddEventListener.call(window, 'click', resumeAudio);
                 }
             }
         } catch(e) {}
 
-        // -------------------------------------------------------------
-        // 核心突破 4：拦截意外 pause 调用 (用户拖拽进度条或主动暂停时放行)
-        // -------------------------------------------------------------
-        const origPause = HTMLMediaElement.prototype.pause;
+        // =============================================================
+        // 核心突破 5：拦截意外 pause 调用
+        // =============================================================
+        var origPause = HTMLMediaElement.prototype.pause;
         HTMLMediaElement.prototype.pause = function() {
             if (!window._masterEnabled || window._allowUserPause || window._isSeeking) {
                 return origPause.apply(this, arguments);
             }
-            // 阻止平台在失焦、切屏时调用的非预期 pause
             if (this.duration && this.currentTime < this.duration - 0.8) {
-                console.log("[jsgsHelper] 成功拦截平台非预期 pause 调用，保持播放状态");
+                console.log("[jsgsHelper] 拦截非预期 pause 调用，保持播放");
                 return;
             }
             return origPause.apply(this, arguments);
         };
 
-        // -------------------------------------------------------------
-        // 核心突破 5：劫持 playbackRate Setter (支持自由倍速不被重置为1)
-        // -------------------------------------------------------------
-        const origDesc = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'playbackRate');
+        // =============================================================
+        // 核心突破 6：劫持 playbackRate Setter
+        // =============================================================
+        var origDesc = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'playbackRate');
         if (origDesc) {
             Object.defineProperty(HTMLMediaElement.prototype, 'playbackRate', {
                 get: function() { return origDesc.get.call(this); },
@@ -120,53 +151,215 @@
             });
         }
 
-        // -------------------------------------------------------------
-        // 核心突破 6：解锁平台前端进度条手动拖动限制 (解除 canUserSeek 限制)
-        // -------------------------------------------------------------
-        function unlockSeekPolicy() {
+        // =============================================================
+        // 核心突破 7：BroadcastChannel 隔离 (多窗口并行学习)
+        // 每个标签页分配独立通道名，阻止跨标签页通信互踢
+        // =============================================================
+        if (window.BroadcastChannel) {
+            var OrigBC = window.BroadcastChannel;
+            window.BroadcastChannel = function(name) {
+                var isolatedName = name + '__jsgs_isolated__' + window._tabId;
+                console.log("[jsgsHelper] BroadcastChannel 隔离: " + name + " -> 独立通道");
+                return new OrigBC(isolatedName);
+            };
+            window.BroadcastChannel.prototype = OrigBC.prototype;
+        }
+
+        // =============================================================
+        // 核心突破 8：会话冲突响应拦截 (多窗口并行学习)
+        // =============================================================
+
+        // 8a: XHR 响应拦截
+        var origXHROpen = XMLHttpRequest.prototype.open;
+        var origXHRSend = XMLHttpRequest.prototype.send;
+
+        XMLHttpRequest.prototype.open = function(method, url) {
+            this._jsgsUrl = (typeof url === 'string') ? url : '';
+            return origXHROpen.apply(this, arguments);
+        };
+
+        XMLHttpRequest.prototype.send = function() {
+            var xhr = this;
+            var url = xhr._jsgsUrl || '';
+
+            if (url.includes('study') || url.includes('session') || url.includes('heartbeat') ||
+                url.includes('learn') || url.includes('keepalive') || url.includes('record') ||
+                url.includes('check') || url.includes('status')) {
+
+                origAddEventListener.call(xhr, 'readystatechange', function() {
+                    if (xhr.readyState === 4 && xhr.status === 200) {
+                        try {
+                            var text = xhr.responseText;
+                            if (text && (text.includes('kick') || text.includes('conflict') ||
+                                text.includes('otherSession') || text.includes('forceStop') ||
+                                text.includes('duplicate'))) {
+                                console.log("[jsgsHelper] 检测到可能的会话冲突响应: " + url.slice(0, 60));
+                                try {
+                                    var json = JSON.parse(text);
+                                    var modified = false;
+                                    var conflictKeys = ['kick', 'kickOut', 'conflict', 'forceStop',
+                                        'otherSession', 'isConflict', 'needStop', 'offline',
+                                        'duplicate', 'isKick', 'forceOffline', 'isOther'];
+                                    function patchObj(obj) {
+                                        if (!obj || typeof obj !== 'object') return;
+                                        conflictKeys.forEach(function(key) {
+                                            if (obj.hasOwnProperty(key) && obj[key]) {
+                                                obj[key] = false;
+                                                modified = true;
+                                            }
+                                        });
+                                    }
+                                    patchObj(json);
+                                    patchObj(json.data);
+                                    patchObj(json.result);
+                                    if (modified) {
+                                        var newText = JSON.stringify(json);
+                                        Object.defineProperty(xhr, 'responseText', { get: function() { return newText; }, configurable: true });
+                                        Object.defineProperty(xhr, 'response', { get: function() { return newText; }, configurable: true });
+                                        console.log("[jsgsHelper] 已中和会话冲突响应");
+                                    }
+                                } catch(e) {}
+                            }
+                        } catch(e) {}
+                    }
+                });
+            }
+
+            return origXHRSend.apply(this, arguments);
+        };
+
+        // 8b: WebSocket 消息拦截
+        if (window.WebSocket) {
+            var OrigWSProto = window.WebSocket.prototype;
+            var origOnMsgDesc = Object.getOwnPropertyDescriptor(OrigWSProto, 'onmessage');
+
+            if (origOnMsgDesc && origOnMsgDesc.set) {
+                Object.defineProperty(OrigWSProto, 'onmessage', {
+                    get: function() { return this._jsgsOnMsg || null; },
+                    set: function(fn) {
+                        var ws = this;
+                        this._jsgsOnMsg = function(event) {
+                            try {
+                                var data = typeof event.data === 'string' ? event.data : '';
+                                if (data.includes('kick') || data.includes('conflict') ||
+                                    data.includes('forceStop') || data.includes('duplicate')) {
+                                    console.log("[jsgsHelper] 拦截 WebSocket 踢出消息");
+                                    return;
+                                }
+                            } catch(e) {}
+                            if (fn) fn.call(ws, event);
+                        };
+                        if (origOnMsgDesc.set) origOnMsgDesc.set.call(ws, ws._jsgsOnMsg);
+                    },
+                    configurable: true
+                });
+            }
+
+            var origWSAddEvent = OrigWSProto.addEventListener;
+            if (origWSAddEvent) {
+                OrigWSProto.addEventListener = function(type, listener, options) {
+                    if (type === 'message' && listener) {
+                        var origListener = listener;
+                        var wrappedListener = function(event) {
+                            try {
+                                var data = typeof event.data === 'string' ? event.data : '';
+                                if (data.includes('kick') || data.includes('conflict') ||
+                                    data.includes('forceStop') || data.includes('duplicate')) {
+                                    console.log("[jsgsHelper] 拦截 WebSocket(addEventListener) 踢出消息");
+                                    return;
+                                }
+                            } catch(e) {}
+                            origListener.call(this, event);
+                        };
+                        return origWSAddEvent.call(this, type, wrappedListener, options);
+                    }
+                    return origWSAddEvent.apply(this, arguments);
+                };
+            }
+        }
+
+        // =============================================================
+        // 核心突破 9：解锁进度条拖动 + 中和 Vue 会话停止方法
+        // =============================================================
+        function unlockSeekAndNeutralizeConflict() {
             function findVue(node) {
                 if (!node) return null;
                 if (node.__vue__) return node.__vue__;
-                for (let c of node.children) {
-                    let v = findVue(c);
+                for (var i = 0; i < node.children.length; i++) {
+                    var v = findVue(node.children[i]);
                     if (v) return v;
                 }
                 return null;
             }
-            const root = findVue(document.body);
+            var root = findVue(document.body);
             if (!root) return;
 
             function walk(v) {
                 if (!v) return;
+
+                // 解锁进度条
                 if (v.canUserSeek && (v.info?.isFast !== true || !v._seekUnlocked)) {
                     v._seekUnlocked = true;
-                    v.canUserSeek = () => true;
-                    v.maxAllowedSeekSec = () => 999999;
+                    v.canUserSeek = function() { return true; };
+                    v.maxAllowedSeekSec = function() { return 999999; };
                     if (v.info) v.info.isFast = true;
                     if (v.applySeekPolicy) v.applySeekPolicy();
                 }
                 if (v.videoPlayer && v.videoPlayer.setSeekPolicy) {
                     v.videoPlayer.setSeekPolicy({ allowUserSeek: true, maxSec: 999999 });
                 }
+
+                // 中和会话冲突相关方法 (多窗口支持)
+                if (v.stopSessionHeartbeat && !v._jsgsPatched) {
+                    v._jsgsPatched = true;
+                    v.stopSessionHeartbeat = function() {
+                        console.log("[jsgsHelper] 拦截 stopSessionHeartbeat (多窗口保护)");
+                    };
+                }
+                if (v._onStudyVis && !v._jsgsVisPatched) {
+                    v._jsgsVisPatched = true;
+                    v._onStudyVis = function() {
+                        console.log("[jsgsHelper] 拦截 _onStudyVis");
+                    };
+                }
+                if (v.kickOut && !v._jsgsKickPatched) {
+                    v._jsgsKickPatched = true;
+                    v.kickOut = function() {
+                        console.log("[jsgsHelper] 拦截 kickOut (多窗口保护)");
+                    };
+                }
+                if (v.forceOffline && !v._jsgsOfflinePatched) {
+                    v._jsgsOfflinePatched = true;
+                    v.forceOffline = function() {
+                        console.log("[jsgsHelper] 拦截 forceOffline (多窗口保护)");
+                    };
+                }
+                if (v.handleConflict && !v._jsgsConflictPatched) {
+                    v._jsgsConflictPatched = true;
+                    v.handleConflict = function() {
+                        console.log("[jsgsHelper] 拦截 handleConflict (多窗口保护)");
+                    };
+                }
+
                 if (v.$children) v.$children.forEach(walk);
             }
             walk(root);
         }
 
-        // -------------------------------------------------------------
-        // 核心突破 7：高频心跳守护定时器 (维持起播、同步倍速、监听快进)
-        // -------------------------------------------------------------
-        setInterval(() => {
-            const v = document.querySelector('video');
+        // =============================================================
+        // 核心突破 10：高频心跳守护定时器
+        // =============================================================
+        setInterval(function() {
+            var v = document.querySelector('video');
             if (!v) return;
 
             if (!v._seekBound) {
                 v._seekBound = true;
-                v.addEventListener('seeking', () => { window._isSeeking = true; });
-                v.addEventListener('seeked', () => { setTimeout(() => { window._isSeeking = false; }, 350); });
+                origAddEventListener.call(v, 'seeking', function() { window._isSeeking = true; });
+                origAddEventListener.call(v, 'seeked', function() { setTimeout(function() { window._isSeeking = false; }, 350); });
             }
 
-            unlockSeekPolicy();
+            unlockSeekAndNeutralizeConflict();
 
             if (!window._masterEnabled) return;
 
@@ -176,15 +369,24 @@
             }
 
             if (v.paused && !v.ended && v.currentTime < (v.duration || 999999) - 0.8 && !window._allowUserPause && !window._isSeeking) {
-                v.play().catch(() => {});
+                v.play().catch(function() {});
             }
         }, 300);
 
-        console.log("[jsgsHelper 内核] 核心防护与增强已完全就绪！");
+        // 定期重新断言属性覆写 (防止平台动态重置)
+        setInterval(function() {
+            try {
+                Object.defineProperty(document, 'hidden', { get: function() { return false; }, configurable: true });
+                Object.defineProperty(document, 'visibilityState', { get: function() { return 'visible'; }, configurable: true });
+                document.hasFocus = function() { return true; };
+            } catch(e) {}
+        }, 2000);
+
+        console.log("[jsgsHelper 内核] 防切屏 + 多窗口隔离 已完全就绪！TabID: " + window._tabId);
     })();
     `;
 
-    // 双重注入机制：既在 unsafeWindow 环境执行，又注入主 DOM Context
+    // 双重注入机制
     try {
         const scriptEl = document.createElement('script');
         scriptEl.textContent = injectionCode;
@@ -205,7 +407,7 @@
 
     const config = {
         enabled: localStorage.getItem('gspx_master_enabled') !== 'false',
-        compensateMode: localStorage.getItem('gspx_compensate_mode') || 'stay_end', // 'stay_end'(结尾驻留) | 'no_compensate'(播完即切) | 'loop_replay'(循环重播)
+        compensateMode: localStorage.getItem('gspx_compensate_mode') || 'stay_end',
         speed: parseFloat(localStorage.getItem('gspx_custom_speed') || '1.0'),
         autoNext: localStorage.getItem('gspx_auto_next') !== 'false',
         crossCourse: localStorage.getItem('gspx_cross_course') !== 'false',
@@ -239,13 +441,11 @@
 
         const curHash = window.location.hash || '';
 
-        // 场景 A：课程大厅列表页 (#/study/list 或 #/study)
         if (curHash.includes('/study/list') || curHash === '#/study' || curHash === '') {
             handleCourseListPage();
             return;
         }
 
-        // 场景 B：具体的课程学习页 (#/study/learn/...)
         handleLearnPage();
     }
 
@@ -295,7 +495,6 @@
 
         updateUI(videoPercent, platformProgress);
 
-        // 检查本课是否播放完毕（进度达到 99% 或 video.ended）
         if ((videoPercent >= 99.0 || video.ended) && config.autoNext && !isNavigating) {
             isNavigating = true;
             handleLessonEnding(video, platformProgress);
@@ -325,7 +524,7 @@
     }
 
     // =========================================================================
-    // 3. 灵活补时策略：支持【结尾静音驻留】、【播完即切】、【循环重播】
+    // 3. 灵活补时策略
     // =========================================================================
     function handleLessonEnding(video, platformProgress) {
         if (config.compensateMode === 'no_compensate') {
@@ -340,10 +539,8 @@
             return;
         }
 
-        // 结尾静音驻留补时：停留在末尾静音挂机，等平台心跳累加到 100%
         if (config.compensateMode === 'stay_end') {
             showStatus(`视频播完，有效学时为 ${platformProgress || 0}%，正在结尾静音驻留补时中...`);
-            console.log(`[jsgsHelper] 开启结尾静音驻留补时，等待心跳达标 100%...`);
 
             if (video.duration && video.currentTime >= video.duration - 0.5) {
                 video.currentTime = Math.max(0, video.duration - 2.5);
@@ -363,7 +560,6 @@
             return;
         }
 
-        // 循环重播补时
         if (config.compensateMode === 'loop_replay') {
             showStatus(`有效学时为 ${platformProgress}%，自动从头重播以补满时长...`);
             setTimeout(() => {
@@ -395,7 +591,6 @@
         }
 
         if (nextNode && !isAllLessonsFinished(allItems)) {
-            console.log("[jsgsHelper] 播放下一小节:", nextNode.innerText.trim().slice(0, 20));
             nextNode.scrollIntoView({ behavior: 'smooth', block: 'center' });
             nextNode.click();
 
@@ -426,7 +621,6 @@
         if (config.crossCourse && curIdx >= 0 && curIdx < COURSE_QUEUE.length - 1) {
             const nextCourse = COURSE_QUEUE[curIdx + 1];
             showStatus(`本课程已全满！3秒后进入下一门:《${nextCourse.name}》...`);
-            console.log(`[jsgsHelper] 跨课切换 [${curIdx + 2}/5]: ${nextCourse.name}`);
 
             setTimeout(() => {
                 window.location.href = `http://jsgs.study.gspxonline.com/resource/index?route=/study/course/${nextCourse.id}#/study/learn/${nextCourse.id}`;
@@ -441,15 +635,41 @@
         }
     }
 
+    // =========================================================================
+    // 3.5 增强弹窗自动关闭 (含多窗口冲突弹窗)
+    // =========================================================================
     function dismissDialogs() {
         const buttons = Array.from(document.querySelectorAll('button, .el-button, span, a')).filter(btn => {
             const t = (btn.innerText || '').trim();
-            return (t.includes('确定') || t.includes('继续学习') || t.includes('知道了') || t.includes('确认')) && btn.offsetHeight > 0;
+            return (t.includes('确定') || t.includes('继续学习') || t.includes('知道了') ||
+                    t.includes('确认') || t.includes('关闭') || t.includes('我知道了') ||
+                    t.includes('继续') || t.includes('重新学习') || t.includes('返回学习')) &&
+                    btn.offsetHeight > 0;
         });
 
         for (const btn of buttons) {
             const modal = btn.closest('.el-dialog, .el-message-box, .dialog, .modal, [role="dialog"]');
             if (modal) {
+                const modalText = modal.innerText || '';
+                const isConflictDialog = modalText.includes('已在') || modalText.includes('其他') ||
+                    modalText.includes('已经') || modalText.includes('打开') ||
+                    modalText.includes('冲突') || modalText.includes('别的') ||
+                    modalText.includes('异地') || modalText.includes('离开') ||
+                    modalText.includes('其它') || modalText.includes('踢出') ||
+                    modalText.includes('下线');
+
+                if (isConflictDialog) {
+                    console.log("[jsgsHelper] 自动关闭多窗口冲突弹窗:", btn.innerText);
+                    btn.click();
+                    setTimeout(() => {
+                        const v = document.querySelector('video');
+                        if (v && v.paused && !v.ended && config.enabled) {
+                            v.play().catch(() => {});
+                        }
+                    }, 500);
+                    continue;
+                }
+
                 console.log("[jsgsHelper] 自动关闭防挂机弹窗:", btn.innerText);
                 btn.click();
             }
@@ -475,18 +695,18 @@
 
         hud.innerHTML = `
             <div style="margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
-                <span style="font-weight: 600; font-size: 13px; color: #0284c7;">jsgsHelper (V3.5防切屏)</span>
+                <span style="font-weight: 600; font-size: 13px; color: #0284c7;">jsgsHelper (V4.0 多窗口)</span>
                 <button id="btn-master-toggle" style="padding: 2px 8px; border-radius: 4px; font-size: 11px; cursor: pointer; border: 1px solid #0284c7; background: ${config.enabled ? '#0284c7' : '#94a3b8'}; color: #fff; font-weight: 600;">
                     ${config.enabled ? '接管中' : '已暂停'}
                 </button>
             </div>
-            
+
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
                 <span id="hud-course-name" style="font-size: 11px; color: #1e293b; font-weight: 600;">当前: ${curCourse.name}</span>
                 <span id="hud-pct" style="background: #059669; color: #fff; padding: 1px 6px; border-radius: 3px; font-size: 10px;">平台:0%</span>
             </div>
-            
-            <div id="hud-status" style="font-size: 11px; color: #64748b; margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">防切屏底层阻断已生效</div>
+
+            <div id="hud-status" style="font-size: 11px; color: #64748b; margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">防切屏 + 多窗口隔离已生效</div>
 
             <!-- 5门课程巡航指示器 -->
             <div style="display: flex; gap: 4px; margin-bottom: 8px;">
@@ -510,7 +730,7 @@
                     <span style="font-size: 11px; color: #475569; font-weight: 500;">播放倍速:</span>
                     <div style="display: flex; align-items: center; gap: 4px;">
                         <input id="input-speed" type="number" step="0.1" min="0.5" max="16.0" value="${config.speed}" style="width: 48px; padding: 1px 3px; border: 1px solid #cbd5e1; border-radius: 3px; font-size: 11px; text-align: center; font-weight: 600; color: #0284c7;">
-                        <span style="font-size: 11px; color: #64748b;">×</span>
+                        <span style="font-size: 11px; color: #64748b;">x</span>
                     </div>
                 </div>
 
@@ -535,7 +755,7 @@
                 </button>
             </div>
 
-            <div style="font-size: 10px; color: #059669; text-align: right;">已开启底层防切屏与WebAudio保活</div>
+            <div style="font-size: 10px; color: #059669; text-align: right;">防切屏 + 多窗口并行 + WebAudio保活</div>
         `;
 
         Object.assign(hud.style, {
@@ -557,7 +777,7 @@
         document.getElementById('btn-master-toggle').addEventListener('click', () => {
             config.enabled = !config.enabled;
             localStorage.setItem('gspx_master_enabled', config.enabled);
-            
+
             if (typeof unsafeWindow !== 'undefined') {
                 unsafeWindow._masterEnabled = config.enabled;
                 unsafeWindow._allowUserPause = !config.enabled;
@@ -628,7 +848,7 @@
     function applySpeed(rate) {
         config.speed = rate;
         localStorage.setItem('gspx_custom_speed', rate);
-        
+
         window._targetSpeed = rate;
         if (typeof unsafeWindow !== 'undefined') {
             unsafeWindow._targetSpeed = rate;
