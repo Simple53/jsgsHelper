@@ -693,86 +693,112 @@
             'loop_replay': '循环重播补时'
         };
 
+        let isCollapsed = localStorage.getItem('gspx_hud_collapsed') === 'true';
+
         hud.innerHTML = `
-            <div style="margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
-                <span style="font-weight: 600; font-size: 13px; color: #0284c7;">jsgsHelper (V4.0 多窗口)</span>
-                <button id="btn-master-toggle" style="padding: 2px 8px; border-radius: 4px; font-size: 11px; cursor: pointer; border: 1px solid #0284c7; background: ${config.enabled ? '#0284c7' : '#94a3b8'}; color: #fff; font-weight: 600;">
-                    ${config.enabled ? '接管中' : '已暂停'}
-                </button>
+            <!-- 悬浮球 (折叠状态) -->
+            <div id="hud-collapsed-view" style="display: ${isCollapsed ? 'flex' : 'none'}; width: 44px; height: 44px; background: #0284c7; border-radius: 14px; color: #fff; align-items: center; justify-content: center; font-size: 13px; font-weight: bold; cursor: pointer; box-shadow: 0 4px 12px rgba(2,132,199,0.4); user-select: none; transition: transform 0.2s;" onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">
+                助手
             </div>
 
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-                <span id="hud-course-name" style="font-size: 11px; color: #1e293b; font-weight: 600;">当前: ${curCourse.name}</span>
-                <span id="hud-pct" style="background: #059669; color: #fff; padding: 1px 6px; border-radius: 3px; font-size: 10px;">平台:0%</span>
-            </div>
-
-            <div id="hud-status" style="font-size: 11px; color: #64748b; margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">防切屏 + 多窗口隔离已生效</div>
-
-            <!-- 5门课程巡航指示器 -->
-            <div style="display: flex; gap: 4px; margin-bottom: 8px;">
-                ${COURSE_QUEUE.map((c, i) => `
-                    <div id="c-step-${c.id}" style="flex: 1; text-align: center; font-size: 10px; padding: 3px 0; border-radius: 3px; background: ${c.id === String(curId) ? '#0284c7; color: #fff; font-weight: 600;' : '#e2e8f0; color: #64748b;'}; cursor: pointer;" title="点击直达: ${c.name}" onclick="location.href='http://jsgs.study.gspxonline.com/resource/index?route=/study/course/${c.id}#/study/learn/${c.id}'">
-                        课${i+1}
+            <!-- 完整面板 (展开状态) -->
+            <div id="hud-expanded-view" style="display: ${isCollapsed ? 'none' : 'block'}; width: 280px; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.18);">
+                <div style="margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
+                    <span style="font-weight: 600; font-size: 13px; color: #0284c7;">jsgsHelper (V4.0)</span>
+                    <div style="display: flex; gap: 6px;">
+                        <button id="btn-master-toggle" style="padding: 2px 8px; border-radius: 4px; font-size: 11px; cursor: pointer; border: 1px solid #0284c7; background: ${config.enabled ? '#0284c7' : '#94a3b8'}; color: #fff; font-weight: 600;">
+                            ${config.enabled ? '接管中' : '已暂停'}
+                        </button>
+                        <button id="btn-collapse" style="padding: 2px 6px; border-radius: 4px; font-size: 11px; cursor: pointer; border: 1px solid #cbd5e1; background: #f8fafc; color: #475569; font-weight: 600;" title="折叠面板">
+                            一
+                        </button>
                     </div>
-                `).join('')}
-            </div>
-
-            <!-- 补时模式选择与自主配置 -->
-            <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px; margin-bottom: 8px;">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                    <span style="font-size: 11px; color: #475569; font-weight: 500;">补时策略:</span>
-                    <button id="btn-toggle-compensate" style="padding: 2px 6px; font-size: 10px; border: 1px solid #cbd5e1; border-radius: 3px; cursor: pointer; background: #fff; color: #0369a1; font-weight: 600;">
-                        ${compensateModeLabels[config.compensateMode] || '结尾静音驻留(推荐)'}
-                    </button>
                 </div>
 
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-                    <span style="font-size: 11px; color: #475569; font-weight: 500;">播放倍速:</span>
-                    <div style="display: flex; align-items: center; gap: 4px;">
-                        <input id="input-speed" type="number" step="0.1" min="0.5" max="16.0" value="${config.speed}" style="width: 48px; padding: 1px 3px; border: 1px solid #cbd5e1; border-radius: 3px; font-size: 11px; text-align: center; font-weight: 600; color: #0284c7;">
-                        <span style="font-size: 11px; color: #64748b;">x</span>
+                    <span id="hud-course-name" style="font-size: 11px; color: #1e293b; font-weight: 600;">当前: ${curCourse.name}</span>
+                    <span id="hud-pct" style="background: #059669; color: #fff; padding: 1px 6px; border-radius: 3px; font-size: 10px;">平台:0%</span>
+                </div>
+
+                <div id="hud-status" style="font-size: 11px; color: #64748b; margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">防切屏 + 多窗口隔离已生效</div>
+
+                <!-- 5门课程巡航指示器 -->
+                <div style="display: flex; gap: 4px; margin-bottom: 8px;">
+                    ${COURSE_QUEUE.map((c, i) => `
+                        <div id="c-step-${c.id}" style="flex: 1; text-align: center; font-size: 10px; padding: 3px 0; border-radius: 3px; background: ${c.id === String(curId) ? '#0284c7; color: #fff; font-weight: 600;' : '#e2e8f0; color: #64748b;'}; cursor: pointer;" title="点击直达: ${c.name}" onclick="location.href='http://jsgs.study.gspxonline.com/resource/index?route=/study/course/${c.id}#/study/learn/${c.id}'">
+                            课${i+1}
+                        </div>
+                    `).join('')}
+                </div>
+
+                <!-- 补时模式选择与自主配置 -->
+                <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px; margin-bottom: 8px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                        <span style="font-size: 11px; color: #475569; font-weight: 500;">补时策略:</span>
+                        <button id="btn-toggle-compensate" style="padding: 2px 6px; font-size: 10px; border: 1px solid #cbd5e1; border-radius: 3px; cursor: pointer; background: #fff; color: #0369a1; font-weight: 600;">
+                            ${compensateModeLabels[config.compensateMode] || '结尾静音驻留(推荐)'}
+                        </button>
+                    </div>
+
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                        <span style="font-size: 11px; color: #475569; font-weight: 500;">播放倍速:</span>
+                        <div style="display: flex; align-items: center; gap: 4px;">
+                            <input id="input-speed" type="number" step="0.1" min="0.5" max="16.0" value="${config.speed}" style="width: 48px; padding: 1px 3px; border: 1px solid #cbd5e1; border-radius: 3px; font-size: 11px; text-align: center; font-weight: 600; color: #0284c7;">
+                            <span style="font-size: 11px; color: #64748b;">x</span>
+                        </div>
+                    </div>
+
+                    <div style="display: flex; gap: 4px;">
+                        <button class="btn-preset-speed" data-rate="1.0" style="flex:1; padding: 2px 0; font-size: 10px; border: 1px solid #0284c7; border-radius: 3px; cursor: pointer; background: #e0f2fe; color: #0369a1; font-weight: 600;">1.0x</button>
+                        <button class="btn-preset-speed" data-rate="1.5" style="flex:1; padding: 2px 0; font-size: 10px; border: 1px solid #cbd5e1; border-radius: 3px; cursor: pointer; background: #fff;">1.5x</button>
+                        <button class="btn-preset-speed" data-rate="2.0" style="flex:1; padding: 2px 0; font-size: 10px; border: 1px solid #cbd5e1; border-radius: 3px; cursor: pointer; background: #fff;">2.0x</button>
+                        <button class="btn-preset-speed" data-rate="2.5" style="flex:1; padding: 2px 0; font-size: 10px; border: 1px solid #cbd5e1; border-radius: 3px; cursor: pointer; background: #fff;">2.5x</button>
                     </div>
                 </div>
 
-                <div style="display: flex; gap: 4px;">
-                    <button class="btn-preset-speed" data-rate="1.0" style="flex:1; padding: 2px 0; font-size: 10px; border: 1px solid #0284c7; border-radius: 3px; cursor: pointer; background: #e0f2fe; color: #0369a1; font-weight: 600;">1.0x</button>
-                    <button class="btn-preset-speed" data-rate="1.5" style="flex:1; padding: 2px 0; font-size: 10px; border: 1px solid #cbd5e1; border-radius: 3px; cursor: pointer; background: #fff;">1.5x</button>
-                    <button class="btn-preset-speed" data-rate="2.0" style="flex:1; padding: 2px 0; font-size: 10px; border: 1px solid #cbd5e1; border-radius: 3px; cursor: pointer; background: #fff;">2.0x</button>
-                    <button class="btn-preset-speed" data-rate="2.5" style="flex:1; padding: 2px 0; font-size: 10px; border: 1px solid #cbd5e1; border-radius: 3px; cursor: pointer; background: #fff;">2.5x</button>
+                <!-- 控制开关 -->
+                <div style="display: flex; gap: 4px; margin-bottom: 4px;">
+                    <button id="btn-toggle-next" style="flex: 1; padding: 4px; font-size: 11px; border: 1px solid #cbd5e1; border-radius: 4px; cursor: pointer; background: ${config.autoNext ? '#e0f2fe' : '#f1f5f9'}; color: ${config.autoNext ? '#0369a1' : '#64748b'}; font-weight: 500;">
+                        小节连播: ${config.autoNext ? '开' : '关'}
+                    </button>
+                    <button id="btn-toggle-cross" style="flex: 1.2; padding: 4px; font-size: 11px; border: 1px solid #cbd5e1; border-radius: 4px; cursor: pointer; background: ${config.crossCourse ? '#e0f2fe' : '#f1f5f9'}; color: ${config.crossCourse ? '#0369a1' : '#64748b'}; font-weight: 500;">
+                        跨课连播: ${config.crossCourse ? '开' : '关'}
+                    </button>
+                    <button id="btn-toggle-mute" style="flex: 0.8; padding: 4px; font-size: 11px; border: 1px solid #cbd5e1; border-radius: 4px; cursor: pointer; background: ${config.autoMute ? '#dcfce7' : '#fee2e2'}; color: ${config.autoMute ? '#15803d' : '#b91c1c'}; font-weight: 500;">
+                        静音: ${config.autoMute ? '是' : '否'}
+                    </button>
                 </div>
-            </div>
 
-            <!-- 控制开关 -->
-            <div style="display: flex; gap: 4px; margin-bottom: 4px;">
-                <button id="btn-toggle-next" style="flex: 1; padding: 4px; font-size: 11px; border: 1px solid #cbd5e1; border-radius: 4px; cursor: pointer; background: ${config.autoNext ? '#e0f2fe' : '#f1f5f9'}; color: ${config.autoNext ? '#0369a1' : '#64748b'}; font-weight: 500;">
-                    小节连播: ${config.autoNext ? '开' : '关'}
-                </button>
-                <button id="btn-toggle-cross" style="flex: 1.2; padding: 4px; font-size: 11px; border: 1px solid #cbd5e1; border-radius: 4px; cursor: pointer; background: ${config.crossCourse ? '#e0f2fe' : '#f1f5f9'}; color: ${config.crossCourse ? '#0369a1' : '#64748b'}; font-weight: 500;">
-                    跨课连播: ${config.crossCourse ? '开' : '关'}
-                </button>
-                <button id="btn-toggle-mute" style="flex: 0.8; padding: 4px; font-size: 11px; border: 1px solid #cbd5e1; border-radius: 4px; cursor: pointer; background: ${config.autoMute ? '#dcfce7' : '#fee2e2'}; color: ${config.autoMute ? '#15803d' : '#b91c1c'}; font-weight: 500;">
-                    静音: ${config.autoMute ? '是' : '否'}
-                </button>
+                <div style="font-size: 10px; color: #059669; text-align: right;">防切屏 + 多窗口并行 + WebAudio保活</div>
             </div>
-
-            <div style="font-size: 10px; color: #059669; text-align: right;">防切屏 + 多窗口并行 + WebAudio保活</div>
         `;
 
         Object.assign(hud.style, {
             position: 'fixed',
             top: '70px',
             right: '25px',
-            width: '280px',
-            background: '#ffffff',
-            boxShadow: '0 10px 25px -5px rgba(0,0,0,0.18)',
-            border: '1px solid #e2e8f0',
-            borderRadius: '10px',
-            padding: '12px',
             zIndex: '99999999',
             fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
             color: '#1e293b'
         });
         document.body.appendChild(hud);
+
+        const collapsedView = document.getElementById('hud-collapsed-view');
+        const expandedView = document.getElementById('hud-expanded-view');
+
+        document.getElementById('btn-collapse').addEventListener('click', () => {
+            isCollapsed = true;
+            localStorage.setItem('gspx_hud_collapsed', 'true');
+            expandedView.style.display = 'none';
+            collapsedView.style.display = 'flex';
+        });
+
+        collapsedView.addEventListener('click', () => {
+            isCollapsed = false;
+            localStorage.setItem('gspx_hud_collapsed', 'false');
+            collapsedView.style.display = 'none';
+            expandedView.style.display = 'block';
+        });
 
         document.getElementById('btn-master-toggle').addEventListener('click', () => {
             config.enabled = !config.enabled;
