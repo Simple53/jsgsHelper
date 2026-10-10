@@ -1,65 +1,126 @@
-# DigestLect · 课程学习台
+# jsgsHelper - 江苏省高校教师岗前培训全自动化助手与离线学习台
 
-一个可本地运行、可部署到 GitHub Pages 的课程视频学习台。支持系统浅/深色主题、可折叠且可拖拽调宽的左右栏、字幕跳转、学习进度、Obsidian Markdown 导出，以及可选的跨设备进度同步。
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![Platform](https://img.shields.io/badge/Platform-Tampermonkey%20%7C%20Python3-green.svg)]()
+[![Status](https://img.shields.io/badge/Status-Active-brightgreen.svg)]()
 
-## 本地使用
+> 专为 **江苏省高校师资培训中心网络学习平台（jsgs.study.gspxonline.com）** 量身打造的全能自动化助手与多媒体交互式离线学习手册。
 
-直接打开 `index.html`，或在本目录启动仅本机可访问的静态服务：
+---
+
+## 🌟 核心特性一览
+
+### 1. 线上无人值守挂机助手 (`auto_study_assistant.user.js`)
+
+针对平台原生的各种限制（失焦暂停、禁止快进、锁定 1.0x 倍速、心跳按真实秒数防作弊等），进行了底层突破：
+
+- 🛡️ **金牌防切屏／后台不暂停**：
+  - 核心突破：直接从 `EventTarget.prototype` 底层拔除 `visibilitychange`、`blur`、`focusout` 监听器的注册权限，网页完全无法得知切屏动作；
+  - 引入 **Web Audio API 极微弱音频保活线程**，防止 Chromium 浏览器对后台静音标签页进行 CPU 降频或休眠，彻底实现**最小化窗口、切换标签页、打游戏办公时后台持续播放不中断**。
+- 🚀 **5 门核心课程全自动跨课巡航**：
+  - 严格按照官方培训考务队列自动流转：
+    1. 高等教育学 (`courseId=991`)
+    2. 高等教育心理学 (`courseId=1088`)
+    3. 高等教育政策与法律 (`courseId=1072`)
+    4. 高校教师职业道德规范 (`courseId=993`)
+    5. 习近平总书记教育重要论述 (`courseId=994`)
+  - 从课程大厅自动按序进入第一门；每门课内依次自动连播各小节；当该门课程学满后，**自动跨课跳转至下一门**，直至 5 门全满！
+- 🔓 **进度条任意拖拽解锁**：
+  - 刺破平台 Vue 实例与 Aliplayer 播放器的 `canUserSeek = false` 限制，**支持任意点击、拖拽进度条快进快退**。
+- ⏱️ **智能学时保障与 3 种补时策略**：
+  - 平台采用物理时间心跳累计制（1秒就是1秒）。针对倍速播放可能导致的“视频播完但平台学时仅50%、刷新回跳中间”的问题，提供 3 种模式自主切换：
+    1. **结尾静音驻留补时（推荐）**：视频播完后定格在结尾静音挂机，等平台心跳累积到 100% 后平滑切入下一讲，**告别从头重播的烦恼**！
+    2. **播完即切（不补时）**：视频一放完立即切下一集，适合快速刷完列表；
+    3. **循环重播补时**：从头重播补满时长。
+- 🎛️ **自定义播放倍速（持久化记忆）**：
+  - 拔除平台的 `lockPlaybackRate = 1` 限制，支持输入任意小数倍速（如 1.5x、2.0x、2.5x），自动保存到 `localStorage`，刷新与换课永不失效。
+- 🛑 **主接管总开关**：
+  - 悬浮面板右上角一键切换 `[接管中] / [已暂停]`，随时将控制权 100% 交还给浏览器原生操作。
+- 🔇 **自动静音挂机** & **秒关防挂机确认弹窗**。
+
+---
+
+### 2. 离线视频下载与交互式 Web Book (`index.html`)
+
+- ⚡ **原生 Python 高并发批量下载器 (`batch_downloader.py`)**：
+  - 零外部命令行依赖，纯 Python 原生多线程并发下载；
+  - 自动穿透 Referer 防盗链鉴权，支持 MP4 流式下载与 M3U8 TS 分片秒级多线程抓取拼接；
+  - 自动将 5 门课程全部 123 讲视频按科目规范归档。
+- 📖 **离线交互式 Web Book**：
+  - 本地 HTML5 原生播放器，整合外挂字幕与 Markdown 结构化笔记；
+  - **点击任意一行字幕或笔记中的时间胶囊，播放器秒级精准跳转播放**；
+  - 播放过程中字幕实时高亮滚动跟读（Karaoke 效果）；
+  - 支持多集本地自动连播。
+
+---
+
+## 🚀 30 秒安装与使用指南
+
+### 安装油猴脚本（线上挂机助手）
+
+1. 浏览器安装 [Tampermonkey (油猴插件)](https://www.tampermonkey.net/)；
+2. 打开油猴扩展管理面板，点击「添加新脚本」；
+3. 打开本项目中的 [`auto_study_assistant.user.js`](./auto_study_assistant.user.js)，复制全部代码，粘贴到油猴编辑器中，按 `Ctrl + S` 保存；
+4. 打开 [江苏省高校师资培训平台 - 我的学习大厅](http://jsgs.study.gspxonline.com/resource/index?route=/study/course/991#/study/list)；
+5. 页面右上角将出现专属控制面板，脚本将自动为您开启 5 门课程无人值守巡航！
+
+---
+
+### 本地批量下载与 Web Book 运行
+
+如需将网课全部下载到本地离线观看或复习：
 
 ```powershell
-python -m http.server 4173 --bind 127.0.0.1
-```
+# 1. 批量下载所有课程视频 (共 123 讲，支持断点跳过)
+python batch_downloader.py
 
-打开 `http://127.0.0.1:4173/`。进度与笔记默认写入当前浏览器的 `localStorage`，不同浏览器用户互不干扰。
-
-## 主要能力
-
-- 左右侧栏均可折叠，桌面端可拖拽改变宽度，宽度会在本机保存。
-- 使用浏览器原生视频控件；没有重复的网页倍速模块。
-- 字幕和摘要中的时间点可跳转到视频；笔记中的时间戳可导出为网页回跳链接。
-- 笔记可下载为 Obsidian Flavored Markdown，或通过 `obsidian://new` 唤起 Obsidian。
-- 同一同步码可在手机和电脑之间合并播放进度与完成状态；个人笔记不会上传。
-
-## 字幕生成
-
-安装一次依赖：
-
-```powershell
-python -m pip install -r requirements-subtitles.txt
-```
-
-先试跑一讲：
-
-```powershell
-python generate_subtitles.py --course 1 --limit 1
+# 2. 数据编译与刷新
 python build_webbook.py
+
+# 3. 离线学习
+双击打开 index.html 即可使用离线多媒体交互式播放手册
 ```
 
-CPU 默认使用低内存参数的 `small + int8`（1 分钟分块、单束搜索）。有 NVIDIA GPU 时可提高搜索质量与吞吐：
+---
 
-```powershell
-python generate_subtitles.py --model small --device cuda --compute-type float16 --chunk-minutes 5 --beam-size 5
-python build_webbook.py
+## 📁 仓库文件结构
+
+```text
+jsgsHelper/
+│
+├── 📜 auto_study_assistant.user.js  # [核心] 线上全自动挂机助手油猴脚本 (V3.5)
+│
+├── 📖 index.html                    # 本地离线 Web Book 主入口 (双击即可打开)
+├── 🎨 webbook.css                   # Web Book 现代深色模式样式表
+├── ⚙️ webbook.js                    # Web Book 播放器与字幕时间戳跳转引擎
+├── 📊 course_data.js                # 整合的课程、本地视频、字幕与笔记数据总线
+│
+├── 🚀 batch_downloader.py           # 纯原生 Python 视频批量高速多线程下载器
+├── 📑 course_videos.json            # 5 门核心课程 123 个视频的流地址元数据
+├── 🔄 build_webbook.py              # 数据同步脚本 (扫描本地视频/字幕并同步 Web Book)
+├── ⚡ download_all.ps1              # PowerShell 版批量下载脚本 (可选 aria2c / N_m3u8DL-RE)
+│
+├── 🎬 videos/                       # 本地视频存储库 (按 5 门课程分门别类)
+├── 💬 subtitles/                    # 外挂字幕库 (.vtt 格式，带毫秒级时间轴)
+└── 📝 summaries/                    # 结构化 Markdown 总结笔记 (含可跳转时间戳)
 ```
 
-字幕保存为 `subtitles/<课程>/<课时>.vtt`，可直接随网页代码发布。
+---
 
-## 免费部署架构
+## ❓ 常见问题 (FAQ)
 
-- GitHub Pages：网页、课程元数据和 VTT 字幕。
-- Cloudflare R2：视频对象。当前视频总量约 7.21 GB，不应提交到普通 Git 仓库。
-- Supabase：可选的跨设备进度同步。
+#### Q1: 为什么有时候倍速播放完，刷新页面会跳到视频中间？
+- **解答**：该平台后端采用**严格的物理秒数心跳累加机制**记录学时。如果在 2.0x 倍速下，10分钟的视频在 5 分钟内播完，平台数据库仅记录了 5 分钟的有效学时（50%）。刷新后播放器会自动读取该 50% 进度回跳。
+- **解决方案**：在脚本面板中将补时策略设为 **「结尾静音驻留」**，或者直接使用 **`1.0x` 标准原速**。在 1.0x 下视频放完正好等于 100% 物理时长，一遍即过不重复！
 
-推送到 `main` 后，`.github/workflows/pages.yml` 会构建并发布 `_site`。部署时可在 GitHub 仓库中设置：
+#### Q2: 切换到其它软件或最小化浏览器，视频真的不会暂停吗？
+- **解答**：**绝不会暂停**。脚本在最底层拦截掉了 `visibilitychange` 与 `blur` 监听器的挂载，同时覆写了 `document.hidden = false` 并注入了 Web Audio API 音频保活线程，彻底骗过网页和浏览器的休眠机制。
 
-- Repository variable `VIDEO_BASE_URL`：R2 自定义域名或 `r2.dev` 公网地址。
-- Repository variable `SUPABASE_URL`：Supabase 项目 URL。
-- Repository secret `SUPABASE_ANON_KEY`：Supabase anon/publishable key。
+#### Q3: 如果我想自己看、手动操作怎么办？
+- **解答**：点击面板右上角的 **`[接管中]`** 按钮，切换为 **`[已暂停]`**，脚本立即释放所有拦截与控制，恢复 100% 原生播放体验。
 
-在 Supabase SQL Editor 执行 `deployment/supabase.sql` 即可创建同步接口。表启用 RLS 且不给匿名角色直接读写权限；网页只能通过同步码的哈希访问对应记录。
+---
 
-## 隐私与仓库边界
+## ⚖️ 免责声明 (Disclaimer)
 
-`videos/`、本地环境变量、私有配置与构建产物已被 `.gitignore` 排除。`config.js` 只保留空白公开配置，不包含账号、路径、邮箱或访问令牌。Supabase 的浏览器 anon/publishable key本身可公开，但本仓库仍通过 GitHub Secret 注入。
-
-发布视频前请确认你拥有这些课程内容的网络分发权。若只获准个人使用，应将 R2 存储桶保持私有，并改为带身份验证的短期签名 URL，而不是公开链接。
+本项目仅供高校教师个人学术交流、计算机网络逆向工程技术研究以及离线学习笔记备忘使用。请合理规划学习时间，严格遵守相关学习平台的学员守则。因使用本工具造成的任何直接或间接后果由使用者自行承担。
