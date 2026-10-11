@@ -100,7 +100,8 @@
         } catch(e) {}
 
         // =============================================================
-        // 核心突破 4：Chrome 后台保活 (Web Audio API 极微弱音频保活)
+        // 核心突破 4：Chrome 后台保活 (Web Audio API 极微弱音频保活 + 隐藏保活静音流)
+        // 确保切换标签页或最小化后，Chromium 定时器与会话心跳依然满频运转
         // =============================================================
         try {
             var AudioCtx = window.AudioContext || window.webkitAudioContext;
@@ -112,15 +113,28 @@
                 osc.connect(gain);
                 gain.connect(actx.destination);
                 osc.start();
-                if (actx.state === 'suspended') {
-                    var resumeAudio = function() { actx.resume(); window.removeEventListener('click', resumeAudio); };
-                    origAddEventListener.call(window, 'click', resumeAudio);
-                }
+
+                var ensureAudioRun = function() {
+                    if (actx.state === 'suspended') {
+                        actx.resume().catch(function() {});
+                    }
+                };
+                origAddEventListener.call(window, 'click', ensureAudioRun);
+                origAddEventListener.call(window, 'keydown', ensureAudioRun);
+                origAddEventListener.call(document, 'click', ensureAudioRun);
+
+                // 页面视频播放时自动激活音频保活上下文
+                setInterval(function() {
+                    var v = document.querySelector('video');
+                    if (v && !v.paused && actx.state === 'suspended') {
+                        actx.resume().catch(function() {});
+                    }
+                }, 1000);
             }
         } catch(e) {}
 
         // =============================================================
-        // 核心突破 5：拦截意外 pause 调用
+        // 核心突破 5：拦截意外 pause 调用 (仅在未到结尾时拦截外部暂停)
         // =============================================================
         var origPause = HTMLMediaElement.prototype.pause;
         HTMLMediaElement.prototype.pause = function() {
@@ -128,7 +142,8 @@
                 return origPause.apply(this, arguments);
             }
             if (this.duration && this.currentTime < this.duration - 0.8) {
-                console.log("[jsgsHelper] 拦截非预期 pause 调用，保持播放");
+                // 仅拦截非播放结束时的外部暂停 (例如窗口切走或失去焦点时的 pause)
+                console.log("[jsgsHelper] 拦截切屏/失焦引起的 pause 调用，保持播放状态");
                 return;
             }
             return origPause.apply(this, arguments);
@@ -169,7 +184,7 @@
         // 核心突破 8：会话冲突响应拦截 (多窗口并行学习)
         // =============================================================
 
-        // 8a: XHR 响应拦截
+        // 8a: XHR 响应拦截 (安全改写 response，不干扰进度上报)
         var origXHROpen = XMLHttpRequest.prototype.open;
         var origXHRSend = XMLHttpRequest.prototype.send;
 
@@ -193,32 +208,31 @@
                             if (text && (text.includes('kick') || text.includes('conflict') ||
                                 text.includes('otherSession') || text.includes('forceStop') ||
                                 text.includes('duplicate'))) {
-                                console.log("[jsgsHelper] 检测到可能的会话冲突响应: " + url.slice(0, 60));
-                                try {
-                                    var json = JSON.parse(text);
-                                    var modified = false;
-                                    var conflictKeys = ['kick', 'kickOut', 'conflict', 'forceStop',
-                                        'otherSession', 'isConflict', 'needStop', 'offline',
-                                        'duplicate', 'isKick', 'forceOffline', 'isOther'];
-                                    function patchObj(obj) {
-                                        if (!obj || typeof obj !== 'object') return;
-                                        conflictKeys.forEach(function(key) {
-                                            if (obj.hasOwnProperty(key) && obj[key]) {
-                                                obj[key] = false;
-                                                modified = true;
-                                            }
-                                        });
-                                    }
-                                    patchObj(json);
-                                    patchObj(json.data);
-                                    patchObj(json.result);
-                                    if (modified) {
-                                        var newText = JSON.stringify(json);
+                                var json = JSON.parse(text);
+                                var modified = false;
+                                var conflictKeys = ['kick', 'kickOut', 'conflict', 'forceStop',
+                                    'otherSession', 'isConflict', 'needStop', 'offline',
+                                    'duplicate', 'isKick', 'forceOffline', 'isOther'];
+                                function patchObj(obj) {
+                                    if (!obj || typeof obj !== 'object') return;
+                                    conflictKeys.forEach(function(key) {
+                                        if (obj.hasOwnProperty(key) && obj[key]) {
+                                            obj[key] = false;
+                                            modified = true;
+                                        }
+                                    });
+                                }
+                                patchObj(json);
+                                patchObj(json.data);
+                                patchObj(json.result);
+                                if (modified) {
+                                    var newText = JSON.stringify(json);
+                                    try {
                                         Object.defineProperty(xhr, 'responseText', { get: function() { return newText; }, configurable: true });
                                         Object.defineProperty(xhr, 'response', { get: function() { return newText; }, configurable: true });
-                                        console.log("[jsgsHelper] 已中和会话冲突响应");
-                                    }
-                                } catch(e) {}
+                                    } catch(e) {}
+                                    console.log("[jsgsHelper] 已中和会话冲突踢出响应");
+                                }
                             }
                         } catch(e) {}
                     }
@@ -309,17 +323,11 @@
                     v.videoPlayer.setSeekPolicy({ allowUserSeek: true, maxSec: 999999 });
                 }
 
-                // 中和会话冲突相关方法 (多窗口支持)
-                if (v.stopSessionHeartbeat && !v._jsgsPatched) {
-                    v._jsgsPatched = true;
-                    v.stopSessionHeartbeat = function() {
-                        console.log("[jsgsHelper] 拦截 stopSessionHeartbeat (多窗口保护)");
-                    };
-                }
+                // 保护会话切屏监听 (防止失焦掐断心跳，但允许正常心跳发送)
                 if (v._onStudyVis && !v._jsgsVisPatched) {
                     v._jsgsVisPatched = true;
                     v._onStudyVis = function() {
-                        console.log("[jsgsHelper] 拦截 _onStudyVis");
+                        console.log("[jsgsHelper] 拦截 _onStudyVis 切屏暂停触发");
                     };
                 }
                 if (v.kickOut && !v._jsgsKickPatched) {
@@ -539,8 +547,12 @@
             return;
         }
 
+        // 结尾静音驻留补时：停留在末尾静音挂机，等平台心跳累加到 100%
         if (config.compensateMode === 'stay_end') {
-            showStatus(`视频播完，有效学时为 ${platformProgress || 0}%，正在结尾静音驻留补时中...`);
+            if (!video._stayEndStart) video._stayEndStart = Date.now();
+            var stayDurationSec = Math.floor((Date.now() - video._stayEndStart) / 1000);
+
+            showStatus(`视频播完，有效学时为 ${platformProgress || 0}%，静音驻留补时中(${stayDurationSec}s)...`);
 
             if (video.duration && video.currentTime >= video.duration - 0.5) {
                 video.currentTime = Math.max(0, video.duration - 2.5);
@@ -551,8 +563,15 @@
             setTimeout(() => {
                 const currentPct = getCurrentLessonPlatformProgress();
                 if (currentPct !== null && currentPct >= 100) {
+                    video._stayEndStart = null;
                     showStatus("平台已成功补满 100%，正在切换下一节...");
                     switchToNextLessonOrCourse();
+                } else if (stayDurationSec >= 15) {
+                    // 若页面 DOM 超过 15 秒未局部刷新进度百分比，刷新页面获取最新学习进度
+                    video._stayEndStart = null;
+                    showStatus("页面DOM未局部更新进度，正在自动刷新同步平台学时...");
+                    console.log("[jsgsHelper] 驻留满15秒，自动刷新页面以获取后台已累积的学时");
+                    location.reload();
                 } else {
                     isNavigating = false;
                 }
@@ -561,7 +580,18 @@
         }
 
         if (config.compensateMode === 'loop_replay') {
-            showStatus(`有效学时为 ${platformProgress}%，自动从头重播以补满时长...`);
+            if (!video._loopReplayCount) video._loopReplayCount = 0;
+            video._loopReplayCount++;
+            if (video._loopReplayCount >= 2 && (!platformProgress || platformProgress < 100)) {
+                // 如果已经重播过但页面进度显示没变，刷新页面更新真实学时
+                video._loopReplayCount = 0;
+                showStatus("检测到页面进度未动态刷新，正在自动刷新加载最新学时...");
+                console.log("[jsgsHelper] 页面进度未实时显示，自动刷新页面获取新进度");
+                location.reload();
+                return;
+            }
+
+            showStatus(`有效学时为 ${platformProgress || 0}%，自动从头重播以补满时长...`);
             setTimeout(() => {
                 video.currentTime = 0;
                 video.play().catch(() => {});
@@ -696,80 +726,90 @@
         let isCollapsed = localStorage.getItem('gspx_hud_collapsed') === 'true';
 
         hud.innerHTML = `
-            <!-- 悬浮球 (折叠状态) -->
-            <div id="hud-collapsed-view" style="display: ${isCollapsed ? 'flex' : 'none'}; width: 44px; height: 44px; background: #0284c7; border-radius: 14px; color: #fff; align-items: center; justify-content: center; font-size: 13px; font-weight: bold; cursor: pointer; box-shadow: 0 4px 12px rgba(2,132,199,0.4); user-select: none; transition: transform 0.2s;" onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">
-                助手
+            <!-- 悬浮球 (折叠状态：精致高质感圆角矩形悬浮球) -->
+            <div id="hud-collapsed-view" style="display: ${isCollapsed ? 'flex' : 'none'}; width: 56px; height: 56px; background: linear-gradient(135deg, #0284c7, #0369a1); border-radius: 18px; color: #fff; flex-direction: column; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; cursor: pointer; box-shadow: 0 6px 20px rgba(2,132,199,0.45); border: 2px solid #ffffff; user-select: none; transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);" onmouseover="this.style.transform='scale(1.08)'; this.style.boxShadow='0 8px 24px rgba(2,132,199,0.6)';" onmouseout="this.style.transform='scale(1)'; this.style.boxShadow='0 6px 20px rgba(2,132,199,0.45)';" title="点击展开挂机助手面板">
+                <span style="font-size: 16px; line-height: 1; margin-bottom: 2px;">⚡</span>
+                <span>助手</span>
             </div>
 
-            <!-- 完整面板 (展开状态) -->
-            <div id="hud-expanded-view" style="display: ${isCollapsed ? 'none' : 'block'}; width: 280px; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 12px; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.18);">
-                <div style="margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
-                    <span style="font-weight: 600; font-size: 13px; color: #0284c7;">jsgsHelper (V4.0)</span>
-                    <div style="display: flex; gap: 6px;">
-                        <button id="btn-master-toggle" style="padding: 2px 8px; border-radius: 4px; font-size: 11px; cursor: pointer; border: 1px solid #0284c7; background: ${config.enabled ? '#0284c7' : '#94a3b8'}; color: #fff; font-weight: 600;">
-                            ${config.enabled ? '接管中' : '已暂停'}
-                        </button>
-                        <button id="btn-collapse" style="padding: 2px 6px; border-radius: 4px; font-size: 11px; cursor: pointer; border: 1px solid #cbd5e1; background: #f8fafc; color: #475569; font-weight: 600;" title="折叠面板">
-                            一
-                        </button>
-                    </div>
-                </div>
+            <!-- 完整面板容器 (展开状态) -->
+            <div id="hud-expanded-view" style="display: ${isCollapsed ? 'none' : 'block'}; position: relative; width: 280px;">
+                <!-- 突出显眼的外部折叠标签按钮 (置于面板左侧外缘) -->
+                <button id="btn-collapse-external" style="position: absolute; left: -26px; top: 12px; width: 26px; height: 38px; background: #0284c7; color: #ffffff; border: none; border-radius: 8px 0 0 8px; cursor: pointer; font-size: 14px; font-weight: bold; display: flex; align-items: center; justify-content: center; box-shadow: -3px 3px 8px rgba(0,0,0,0.15); transition: background 0.2s;" onmouseover="this.style.background='#0369a1'" onmouseout="this.style.background='#0284c7'" title="点击折叠为悬浮球">
+                    ❯
+                </button>
 
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-                    <span id="hud-course-name" style="font-size: 11px; color: #1e293b; font-weight: 600;">当前: ${curCourse.name}</span>
-                    <span id="hud-pct" style="background: #059669; color: #fff; padding: 1px 6px; border-radius: 3px; font-size: 10px;">平台:0%</span>
-                </div>
-
-                <div id="hud-status" style="font-size: 11px; color: #64748b; margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">防切屏 + 多窗口隔离已生效</div>
-
-                <!-- 5门课程巡航指示器 -->
-                <div style="display: flex; gap: 4px; margin-bottom: 8px;">
-                    ${COURSE_QUEUE.map((c, i) => `
-                        <div id="c-step-${c.id}" style="flex: 1; text-align: center; font-size: 10px; padding: 3px 0; border-radius: 3px; background: ${c.id === String(curId) ? '#0284c7; color: #fff; font-weight: 600;' : '#e2e8f0; color: #64748b;'}; cursor: pointer;" title="点击直达: ${c.name}" onclick="location.href='http://jsgs.study.gspxonline.com/resource/index?route=/study/course/${c.id}#/study/learn/${c.id}'">
-                            课${i+1}
+                <!-- 内部面板主体 -->
+                <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 12px; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.18);">
+                    <div style="margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
+                        <span style="font-weight: 700; font-size: 13px; color: #0284c7;">jsgsHelper (V4.0)</span>
+                        <div style="display: flex; gap: 6px; align-items: center;">
+                            <button id="btn-master-toggle" style="padding: 2px 8px; border-radius: 4px; font-size: 11px; cursor: pointer; border: 1px solid #0284c7; background: ${config.enabled ? '#0284c7' : '#94a3b8'}; color: #fff; font-weight: 600;">
+                                ${config.enabled ? '接管中' : '已暂停'}
+                            </button>
+                            <button id="btn-collapse" style="padding: 2px 7px; border-radius: 4px; font-size: 11px; cursor: pointer; border: 1px solid #cbd5e1; background: #f8fafc; color: #475569; font-weight: 700;" title="折叠为悬浮球">
+                                收起
+                            </button>
                         </div>
-                    `).join('')}
-                </div>
-
-                <!-- 补时模式选择与自主配置 -->
-                <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px; margin-bottom: 8px;">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                        <span style="font-size: 11px; color: #475569; font-weight: 500;">补时策略:</span>
-                        <button id="btn-toggle-compensate" style="padding: 2px 6px; font-size: 10px; border: 1px solid #cbd5e1; border-radius: 3px; cursor: pointer; background: #fff; color: #0369a1; font-weight: 600;">
-                            ${compensateModeLabels[config.compensateMode] || '结尾静音驻留(推荐)'}
-                        </button>
                     </div>
 
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-                        <span style="font-size: 11px; color: #475569; font-weight: 500;">播放倍速:</span>
-                        <div style="display: flex; align-items: center; gap: 4px;">
-                            <input id="input-speed" type="number" step="0.1" min="0.5" max="16.0" value="${config.speed}" style="width: 48px; padding: 1px 3px; border: 1px solid #cbd5e1; border-radius: 3px; font-size: 11px; text-align: center; font-weight: 600; color: #0284c7;">
-                            <span style="font-size: 11px; color: #64748b;">x</span>
+                        <span id="hud-course-name" style="font-size: 11px; color: #1e293b; font-weight: 600;">当前: ${curCourse.name}</span>
+                        <span id="hud-pct" style="background: #059669; color: #fff; padding: 1px 6px; border-radius: 3px; font-size: 10px;">平台:0%</span>
+                    </div>
+
+                    <div id="hud-status" style="font-size: 11px; color: #64748b; margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">防切屏 + 多窗口隔离已生效</div>
+
+                    <!-- 5门课程巡航指示器 -->
+                    <div style="display: flex; gap: 4px; margin-bottom: 8px;">
+                        ${COURSE_QUEUE.map((c, i) => `
+                            <div id="c-step-${c.id}" style="flex: 1; text-align: center; font-size: 10px; padding: 3px 0; border-radius: 3px; background: ${c.id === String(curId) ? '#0284c7; color: #fff; font-weight: 600;' : '#e2e8f0; color: #64748b;'}; cursor: pointer;" title="点击直达: ${c.name}" onclick="location.href='http://jsgs.study.gspxonline.com/resource/index?route=/study/course/${c.id}#/study/learn/${c.id}'">
+                                课${i+1}
+                            </div>
+                        `).join('')}
+                    </div>
+
+                    <!-- 补时模式选择与自主配置 -->
+                    <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px; margin-bottom: 8px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                            <span style="font-size: 11px; color: #475569; font-weight: 500;">补时策略:</span>
+                            <button id="btn-toggle-compensate" style="padding: 2px 6px; font-size: 10px; border: 1px solid #cbd5e1; border-radius: 3px; cursor: pointer; background: #fff; color: #0369a1; font-weight: 600;">
+                                ${compensateModeLabels[config.compensateMode] || '结尾静音驻留(推荐)'}
+                            </button>
+                        </div>
+
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                            <span style="font-size: 11px; color: #475569; font-weight: 500;">播放倍速:</span>
+                            <div style="display: flex; align-items: center; gap: 4px;">
+                                <input id="input-speed" type="number" step="0.1" min="0.5" max="16.0" value="${config.speed}" style="width: 48px; padding: 1px 3px; border: 1px solid #cbd5e1; border-radius: 3px; font-size: 11px; text-align: center; font-weight: 600; color: #0284c7;">
+                                <span style="font-size: 11px; color: #64748b;">x</span>
+                            </div>
+                        </div>
+
+                        <!-- 预设倍速按钮 (动态点亮高亮指示) -->
+                        <div style="display: flex; gap: 4px;">
+                            <button class="btn-preset-speed" data-rate="1.0" style="flex:1; padding: 3px 0; font-size: 10px; border: 1px solid #cbd5e1; border-radius: 4px; cursor: pointer; background: #fff; color: #334155;">1.0x</button>
+                            <button class="btn-preset-speed" data-rate="1.5" style="flex:1; padding: 3px 0; font-size: 10px; border: 1px solid #cbd5e1; border-radius: 4px; cursor: pointer; background: #fff; color: #334155;">1.5x</button>
+                            <button class="btn-preset-speed" data-rate="2.0" style="flex:1; padding: 3px 0; font-size: 10px; border: 1px solid #cbd5e1; border-radius: 4px; cursor: pointer; background: #fff; color: #334155;">2.0x</button>
+                            <button class="btn-preset-speed" data-rate="2.5" style="flex:1; padding: 3px 0; font-size: 10px; border: 1px solid #cbd5e1; border-radius: 4px; cursor: pointer; background: #fff; color: #334155;">2.5x</button>
                         </div>
                     </div>
 
-                    <div style="display: flex; gap: 4px;">
-                        <button class="btn-preset-speed" data-rate="1.0" style="flex:1; padding: 2px 0; font-size: 10px; border: 1px solid #0284c7; border-radius: 3px; cursor: pointer; background: #e0f2fe; color: #0369a1; font-weight: 600;">1.0x</button>
-                        <button class="btn-preset-speed" data-rate="1.5" style="flex:1; padding: 2px 0; font-size: 10px; border: 1px solid #cbd5e1; border-radius: 3px; cursor: pointer; background: #fff;">1.5x</button>
-                        <button class="btn-preset-speed" data-rate="2.0" style="flex:1; padding: 2px 0; font-size: 10px; border: 1px solid #cbd5e1; border-radius: 3px; cursor: pointer; background: #fff;">2.0x</button>
-                        <button class="btn-preset-speed" data-rate="2.5" style="flex:1; padding: 2px 0; font-size: 10px; border: 1px solid #cbd5e1; border-radius: 3px; cursor: pointer; background: #fff;">2.5x</button>
+                    <!-- 控制开关 -->
+                    <div style="display: flex; gap: 4px; margin-bottom: 4px;">
+                        <button id="btn-toggle-next" style="flex: 1; padding: 4px; font-size: 11px; border: 1px solid #cbd5e1; border-radius: 4px; cursor: pointer; background: ${config.autoNext ? '#e0f2fe' : '#f1f5f9'}; color: ${config.autoNext ? '#0369a1' : '#64748b'}; font-weight: 500;">
+                            小节连播: ${config.autoNext ? '开' : '关'}
+                        </button>
+                        <button id="btn-toggle-cross" style="flex: 1.2; padding: 4px; font-size: 11px; border: 1px solid #cbd5e1; border-radius: 4px; cursor: pointer; background: ${config.crossCourse ? '#e0f2fe' : '#f1f5f9'}; color: ${config.crossCourse ? '#0369a1' : '#64748b'}; font-weight: 500;">
+                            跨课连播: ${config.crossCourse ? '开' : '关'}
+                        </button>
+                        <button id="btn-toggle-mute" style="flex: 0.8; padding: 4px; font-size: 11px; border: 1px solid #cbd5e1; border-radius: 4px; cursor: pointer; background: ${config.autoMute ? '#dcfce7' : '#fee2e2'}; color: ${config.autoMute ? '#15803d' : '#b91c1c'}; font-weight: 500;">
+                            静音: ${config.autoMute ? '是' : '否'}
+                        </button>
                     </div>
-                </div>
 
-                <!-- 控制开关 -->
-                <div style="display: flex; gap: 4px; margin-bottom: 4px;">
-                    <button id="btn-toggle-next" style="flex: 1; padding: 4px; font-size: 11px; border: 1px solid #cbd5e1; border-radius: 4px; cursor: pointer; background: ${config.autoNext ? '#e0f2fe' : '#f1f5f9'}; color: ${config.autoNext ? '#0369a1' : '#64748b'}; font-weight: 500;">
-                        小节连播: ${config.autoNext ? '开' : '关'}
-                    </button>
-                    <button id="btn-toggle-cross" style="flex: 1.2; padding: 4px; font-size: 11px; border: 1px solid #cbd5e1; border-radius: 4px; cursor: pointer; background: ${config.crossCourse ? '#e0f2fe' : '#f1f5f9'}; color: ${config.crossCourse ? '#0369a1' : '#64748b'}; font-weight: 500;">
-                        跨课连播: ${config.crossCourse ? '开' : '关'}
-                    </button>
-                    <button id="btn-toggle-mute" style="flex: 0.8; padding: 4px; font-size: 11px; border: 1px solid #cbd5e1; border-radius: 4px; cursor: pointer; background: ${config.autoMute ? '#dcfce7' : '#fee2e2'}; color: ${config.autoMute ? '#15803d' : '#b91c1c'}; font-weight: 500;">
-                        静音: ${config.autoMute ? '是' : '否'}
-                    </button>
+                    <div style="font-size: 10px; color: #059669; text-align: right;">防切屏 + 多窗口并行 + WebAudio保活</div>
                 </div>
-
-                <div style="font-size: 10px; color: #059669; text-align: right;">防切屏 + 多窗口并行 + WebAudio保活</div>
             </div>
         `;
 
@@ -786,19 +826,45 @@
         const collapsedView = document.getElementById('hud-collapsed-view');
         const expandedView = document.getElementById('hud-expanded-view');
 
-        document.getElementById('btn-collapse').addEventListener('click', () => {
+        const doCollapse = () => {
             isCollapsed = true;
             localStorage.setItem('gspx_hud_collapsed', 'true');
             expandedView.style.display = 'none';
             collapsedView.style.display = 'flex';
-        });
+        };
 
-        collapsedView.addEventListener('click', () => {
+        const doExpand = () => {
             isCollapsed = false;
             localStorage.setItem('gspx_hud_collapsed', 'false');
             collapsedView.style.display = 'none';
             expandedView.style.display = 'block';
-        });
+        };
+
+        document.getElementById('btn-collapse').addEventListener('click', doCollapse);
+        const btnCollapseExt = document.getElementById('btn-collapse-external');
+        if (btnCollapseExt) btnCollapseExt.addEventListener('click', doCollapse);
+        collapsedView.addEventListener('click', doExpand);
+
+        // 刷新倍速按钮亮起外观
+        function refreshSpeedButtonStyles() {
+            document.querySelectorAll('.btn-preset-speed').forEach(btn => {
+                const r = parseFloat(btn.dataset.rate);
+                if (Math.abs(r - config.speed) < 0.05) {
+                    btn.style.background = '#0284c7';
+                    btn.style.color = '#ffffff';
+                    btn.style.borderColor = '#0284c7';
+                    btn.style.fontWeight = '700';
+                    btn.style.boxShadow = '0 2px 4px rgba(2,132,199,0.3)';
+                } else {
+                    btn.style.background = '#ffffff';
+                    btn.style.color = '#334155';
+                    btn.style.borderColor = '#cbd5e1';
+                    btn.style.fontWeight = '500';
+                    btn.style.boxShadow = 'none';
+                }
+            });
+        }
+        refreshSpeedButtonStyles();
 
         document.getElementById('btn-master-toggle').addEventListener('click', () => {
             config.enabled = !config.enabled;
@@ -830,7 +896,10 @@
         const speedInput = document.getElementById('input-speed');
         speedInput.addEventListener('change', () => {
             const val = parseFloat(speedInput.value);
-            if (val > 0 && val <= 16) applySpeed(val);
+            if (val > 0 && val <= 16) {
+                applySpeed(val);
+                refreshSpeedButtonStyles();
+            }
         });
 
         document.querySelectorAll('.btn-preset-speed').forEach(btn => {
@@ -838,6 +907,7 @@
                 const r = parseFloat(btn.dataset.rate);
                 applySpeed(r);
                 speedInput.value = r;
+                refreshSpeedButtonStyles();
             });
         });
 
