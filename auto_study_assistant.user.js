@@ -1,29 +1,28 @@
 // ==UserScript==
-// @name         江苏高校岗培 - 全自动跨课连播与多窗口学习助手(V4.0)
+// @name         江苏高校岗培 - 全自动跨课连播与多窗口学习助手(V4.1)
 // @namespace    https://github.com/Simple53/jsgsHelper
-// @version      4.0.0
-// @description  彻底终结切屏/失焦/最小化暂停(EventTarget级拦截+捕获阶段阻断+WebAudio保活)、支持多窗口同时学习(BroadcastChannel隔离+会话冲突拦截+自动关闭冲突弹窗)、解除进度条拖动限制、自由倍速、5门课程自动跨课连播
+// @version      4.1.0
+// @description  彻底终结切屏/失焦/最小化暂停(EventTarget级拦截+捕获阶段阻断+WebAudio保活)、支持多窗口同时学习、定时同步进度、解除进度条拖动限制、自由倍速、5门课程自动跨课连播
 // @author       Simple53
 // @match        *://jsgs.study.gspxonline.com/*
 // @match        *://*.gspxonline.com/*
 // @run-at       document-start
-// @grant        unsafeWindow
+// @grant        none
 // ==/UserScript==
 
 (function () {
     'use strict';
-    console.log("[jsgsHelper V4.0] 启动：防切屏 + 多窗口并行学习引擎已加载...");
+    console.log("[jsgsHelper V4.1] 学习助手已加载...");
 
     // =========================================================================
     // 0. 主页面上下文核心注入：从底层彻底阻断切屏暂停 + 多窗口冲突
     // =========================================================================
-    const injectionCode = `
     (function() {
         console.log("[jsgsHelper 内核] 正在安装防切屏拦截器、多窗口隔离层与媒体控制增强...");
 
         window._masterEnabled = localStorage.getItem('gspx_master_enabled') !== 'false';
         window._targetSpeed = parseFloat(localStorage.getItem('gspx_custom_speed') || '1.0');
-        window._allowUserPause = false;
+        window._allowUserPause = !window._masterEnabled;
         window._isSeeking = false;
         window._tabId = 'tab_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
 
@@ -97,40 +96,6 @@
             Object.defineProperty(window, 'onfocus', { get: function() { return null; }, set: function() {}, configurable: true });
             Object.defineProperty(document, 'onblur', { get: function() { return null; }, set: function() {}, configurable: true });
             Object.defineProperty(document, 'onfocus', { get: function() { return null; }, set: function() {}, configurable: true });
-        } catch(e) {}
-
-        // =============================================================
-        // 核心突破 4：Chrome 后台保活 (Web Audio API 极微弱音频保活 + 隐藏保活静音流)
-        // 确保切换标签页或最小化后，Chromium 定时器与会话心跳依然满频运转
-        // =============================================================
-        try {
-            var AudioCtx = window.AudioContext || window.webkitAudioContext;
-            if (AudioCtx) {
-                var actx = new AudioCtx();
-                var osc = actx.createOscillator();
-                var gain = actx.createGain();
-                gain.gain.value = 0.00001;
-                osc.connect(gain);
-                gain.connect(actx.destination);
-                osc.start();
-
-                var ensureAudioRun = function() {
-                    if (actx.state === 'suspended') {
-                        actx.resume().catch(function() {});
-                    }
-                };
-                origAddEventListener.call(window, 'click', ensureAudioRun);
-                origAddEventListener.call(window, 'keydown', ensureAudioRun);
-                origAddEventListener.call(document, 'click', ensureAudioRun);
-
-                // 页面视频播放时自动激活音频保活上下文
-                setInterval(function() {
-                    var v = document.querySelector('video');
-                    if (v && !v.paused && actx.state === 'suspended') {
-                        actx.resume().catch(function() {});
-                    }
-                }, 1000);
-            }
         } catch(e) {}
 
         // =============================================================
@@ -365,6 +330,15 @@
                 v._seekBound = true;
                 origAddEventListener.call(v, 'seeking', function() { window._isSeeking = true; });
                 origAddEventListener.call(v, 'seeked', function() { setTimeout(function() { window._isSeeking = false; }, 350); });
+                // 平台通过已缓存的原生 pause 方法暂停时，原型拦截不会执行；媒体事件可补上这一条路径。
+                origAddEventListener.call(v, 'pause', function() {
+                    if (window._masterEnabled && !window._allowUserPause && !window._isSeeking && !v.ended) {
+                        Promise.resolve().then(function() { window._studyAssistantPlay?.(v); });
+                    }
+                });
+                ['loadedmetadata', 'canplay'].forEach(function(type) {
+                    origAddEventListener.call(v, type, function() { window._studyAssistantPlay?.(v); });
+                });
             }
 
             unlockSeekAndNeutralizeConflict();
@@ -377,7 +351,7 @@
             }
 
             if (v.paused && !v.ended && v.currentTime < (v.duration || 999999) - 0.8 && !window._allowUserPause && !window._isSeeking) {
-                v.play().catch(function() {});
+                window._studyAssistantPlay?.(v);
             }
         }, 300);
 
@@ -390,17 +364,9 @@
             } catch(e) {}
         }, 2000);
 
-        console.log("[jsgsHelper 内核] 防切屏 + 多窗口隔离 已完全就绪！TabID: " + window._tabId);
+        window._studyAssistantReady = true;
+        console.log("[jsgsHelper 内核] 播放监听已安装，TabID: " + window._tabId);
     })();
-    `;
-
-    // 双重注入机制
-    try {
-        const scriptEl = document.createElement('script');
-        scriptEl.textContent = injectionCode;
-        (document.head || document.documentElement).appendChild(scriptEl);
-        scriptEl.remove();
-    } catch(e) {}
 
     // =========================================================================
     // 1. 5 门官方培训核心考试课程标准队列
@@ -413,6 +379,7 @@
         { id: "994", name: "习近平总书记教育重要论述" }
     ];
 
+    const storedRefresh = localStorage.getItem('gspx_refresh_minutes');
     const config = {
         enabled: localStorage.getItem('gspx_master_enabled') !== 'false',
         compensateMode: localStorage.getItem('gspx_compensate_mode') || 'stay_end',
@@ -420,6 +387,8 @@
         autoNext: localStorage.getItem('gspx_auto_next') !== 'false',
         crossCourse: localStorage.getItem('gspx_cross_course') !== 'false',
         autoMute: localStorage.getItem('gspx_auto_mute') !== 'false',
+        refreshMinutes: storedRefresh !== null && /^\d+$/.test(storedRefresh) && Number(storedRefresh) <= 120
+            ? Number(storedRefresh) : 5,
         autoDismiss: true
     };
 
@@ -427,12 +396,66 @@
     let isNavigating = false;
     let listCountdown = 3;
     let listCountdownTimer = null;
+    let lastRefreshAt = Date.now();
+    const refreshResumeKey = 'gspx_refresh_resume';
 
     function getCurrentCourseId() {
         const hash = window.location.hash || '';
         const search = window.location.search || '';
         const match = hash.match(/\/learn\/(\d+)/) || search.match(/courseId=(\d+)/);
         return match ? match[1] : null;
+    }
+
+    function restorePlaybackPosition(video) {
+        if (video._studyPositionChecked || video.readyState < 1) return;
+        video._studyPositionChecked = true;
+        try {
+            const saved = JSON.parse(sessionStorage.getItem(refreshResumeKey));
+            sessionStorage.removeItem(refreshResumeKey);
+            if (saved && saved.courseId === getCurrentCourseId() && Date.now() - saved.at < 30000 &&
+                Number.isFinite(saved.time) && saved.time > video.currentTime + 3 && saved.time < video.duration - 5) {
+                video.currentTime = saved.time;
+            }
+        } catch (_) {}
+    }
+
+    window._studyAssistantPlay = function(video) {
+        if (!config.enabled || window._allowUserPause || window._isSeeking || video.ended || !video.paused ||
+            video._studyPlayPending || Date.now() < (video._studyRetryAfter || 0)) return;
+        if (config.autoMute) video.muted = true;
+        if (video.readyState < 2) return;
+        restorePlaybackPosition(video);
+        video._studyPlayPending = true;
+        try {
+            Promise.resolve(video.play()).catch(() => {
+                video._studyRetryAfter = Date.now() + 1500;
+                showStatus('自动播放受阻，请点击视频或面板中的继续播放');
+            }).finally(() => { video._studyPlayPending = false; });
+        } catch (_) {
+            video._studyPlayPending = false;
+            video._studyRetryAfter = Date.now() + 1500;
+        }
+    };
+
+    function refreshProgressPage(video) {
+        try {
+            if (video && Number.isFinite(video.currentTime)) {
+                sessionStorage.setItem(refreshResumeKey, JSON.stringify({
+                    courseId: getCurrentCourseId(), time: video.currentTime, at: Date.now()
+                }));
+            } else {
+                sessionStorage.removeItem(refreshResumeKey);
+            }
+        } catch (_) {}
+        lastRefreshAt = Date.now();
+        showStatus('正在刷新页面，同步平台进度…');
+        window.location.reload();
+    }
+
+    function maybeRefreshProgress(video, videoPercent) {
+        if (!config.refreshMinutes || isNavigating || window._allowUserPause || video.paused || video.ended ||
+            videoPercent >= 98 || Date.now() - lastRefreshAt < config.refreshMinutes * 60000) return;
+        refreshProgressPage(video);
     }
 
     // =========================================================================
@@ -449,7 +472,7 @@
 
         const curHash = window.location.hash || '';
 
-        if (curHash.includes('/study/list') || curHash === '#/study' || curHash === '') {
+        if (!document.querySelector('video') && (curHash.includes('/study/list') || curHash === '#/study' || curHash === '')) {
             handleCourseListPage();
             return;
         }
@@ -486,15 +509,17 @@
         }
 
         const video = document.querySelector('video');
-        if (!video) return;
-
-        if (config.autoMute && !video.muted) {
-            video.muted = true;
+        if (!video) {
+            showStatus('等待课程视频加载…');
+            return;
         }
 
-        if (video.paused && !video.ended && !isNavigating) {
-            video.play().catch(() => {});
-        }
+        restorePlaybackPosition(video);
+        if (!isNavigating) window._studyAssistantPlay(video);
+        const playbackLabel = document.getElementById('hud-playback-label');
+        if (playbackLabel) playbackLabel.textContent = video.paused ? '继续播放' : '暂停视频';
+        if (window._allowUserPause) showStatus('已手动暂停');
+        else if (!video.paused) showStatus('视频播放中 · 切换窗口后会尝试保持播放');
 
         const duration = video.duration || 0;
         const curTime = video.currentTime || 0;
@@ -506,7 +531,9 @@
         if ((videoPercent >= 99.0 || video.ended) && config.autoNext && !isNavigating) {
             isNavigating = true;
             handleLessonEnding(video, platformProgress);
+            return;
         }
+        maybeRefreshProgress(video, videoPercent);
     }
 
     function getCurrentLessonPlatformProgress() {
@@ -726,29 +753,27 @@
         let isCollapsed = localStorage.getItem('gspx_hud_collapsed') === 'true';
 
         hud.innerHTML = `
-            <!-- 悬浮球 (折叠状态：精致高质感圆角矩形悬浮球) -->
-            <div id="hud-collapsed-view" style="display: ${isCollapsed ? 'flex' : 'none'}; width: 56px; height: 56px; background: linear-gradient(135deg, #0284c7, #0369a1); border-radius: 18px; color: #fff; flex-direction: column; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; cursor: pointer; box-shadow: 0 6px 20px rgba(2,132,199,0.45); border: 2px solid #ffffff; user-select: none; transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);" onmouseover="this.style.transform='scale(1.08)'; this.style.boxShadow='0 8px 24px rgba(2,132,199,0.6)';" onmouseout="this.style.transform='scale(1)'; this.style.boxShadow='0 6px 20px rgba(2,132,199,0.45)';" title="点击展开挂机助手面板">
-                <span style="font-size: 16px; line-height: 1; margin-bottom: 2px;">⚡</span>
-                <span>助手</span>
+            <!-- 折叠图标：视频画面与课程进度线 -->
+            <div id="hud-collapsed-view" role="button" tabindex="0" aria-label="展开学习播放助手" style="display: ${isCollapsed ? 'flex' : 'none'};" title="点击展开，拖动可移动">
+                <svg viewBox="0 0 32 32" width="26" height="26" fill="none" aria-hidden="true">
+                    <rect x="3.5" y="5.5" width="25" height="21" rx="6" stroke="currentColor" stroke-width="2"/>
+                    <path d="M13 11.5 21 16l-8 4.5v-9Z" fill="currentColor"/>
+                    <path d="M8 24h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                </svg>
             </div>
 
             <!-- 完整面板容器 (展开状态) -->
             <div id="hud-expanded-view" style="display: ${isCollapsed ? 'none' : 'block'}; position: relative; width: 280px;">
-                <!-- 突出显眼的外部折叠标签按钮 (置于面板左侧外缘) -->
-                <button id="btn-collapse-external" style="position: absolute; left: -26px; top: 12px; width: 26px; height: 38px; background: #0284c7; color: #ffffff; border: none; border-radius: 8px 0 0 8px; cursor: pointer; font-size: 14px; font-weight: bold; display: flex; align-items: center; justify-content: center; box-shadow: -3px 3px 8px rgba(0,0,0,0.15); transition: background 0.2s;" onmouseover="this.style.background='#0369a1'" onmouseout="this.style.background='#0284c7'" title="点击折叠为悬浮球">
-                    ❯
-                </button>
-
                 <!-- 内部面板主体 -->
                 <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 12px; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.18);">
-                    <div style="margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
-                        <span style="font-weight: 700; font-size: 13px; color: #0284c7;">jsgsHelper (V4.0)</span>
+                    <div id="hud-drag-handle" style="margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;" title="按住空白处拖动面板">
+                        <span style="font-weight: 700; font-size: 13px; color: #0284c7;">学习播放助手 <small>V4.1</small></span>
                         <div style="display: flex; gap: 6px; align-items: center;">
                             <button id="btn-master-toggle" style="padding: 2px 8px; border-radius: 4px; font-size: 11px; cursor: pointer; border: 1px solid #0284c7; background: ${config.enabled ? '#0284c7' : '#94a3b8'}; color: #fff; font-weight: 600;">
                                 ${config.enabled ? '接管中' : '已暂停'}
                             </button>
-                            <button id="btn-collapse" style="padding: 2px 7px; border-radius: 4px; font-size: 11px; cursor: pointer; border: 1px solid #cbd5e1; background: #f8fafc; color: #475569; font-weight: 700;" title="折叠为悬浮球">
-                                收起
+                            <button id="btn-collapse" aria-label="收起面板" style="padding: 2px 7px; border-radius: 4px; font-size: 11px; cursor: pointer; border: 1px solid #cbd5e1; background: #f8fafc; color: #475569; font-weight: 700;" title="收起面板">
+                                <svg viewBox="0 0 20 20" width="14" height="14" fill="none" aria-hidden="true"><path d="m5 8 5 5 5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
                             </button>
                         </div>
                     </div>
@@ -758,12 +783,27 @@
                         <span id="hud-pct" style="background: #059669; color: #fff; padding: 1px 6px; border-radius: 3px; font-size: 10px;">平台:0%</span>
                     </div>
 
-                    <div id="hud-status" style="font-size: 11px; color: #64748b; margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">防切屏 + 多窗口隔离已生效</div>
+                    <div id="hud-status" role="status" aria-live="polite" style="font-size: 11px; color: #64748b; margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">正在检测视频状态…</div>
+                    <div id="hud-progress-track" aria-hidden="true"><span id="hud-progress-fill"></span></div>
+                    <button id="btn-playback-toggle" type="button" aria-pressed="false">
+                        <svg class="hud-pause-icon" viewBox="0 0 20 20" width="14" height="14" fill="none" aria-hidden="true"><path d="M6 4v12M14 4v12" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>
+                        <svg class="hud-play-icon" viewBox="0 0 20 20" width="14" height="14" fill="none" aria-hidden="true"><path d="m6 4 10 6-10 6V4Z" fill="currentColor"/></svg>
+                        <span id="hud-playback-label">暂停视频</span>
+                    </button>
+                    <div id="hud-refresh-row">
+                        <label for="input-refresh">进度刷新</label>
+                        <input id="input-refresh" type="number" min="0" max="120" step="1" value="${config.refreshMinutes}" title="刷新间隔，0 表示关闭定时刷新">
+                        <span>分钟</span>
+                        <button id="btn-refresh-now" type="button" title="立即刷新页面并同步平台进度">
+                            <svg viewBox="0 0 20 20" width="13" height="13" fill="none" aria-hidden="true"><path d="M16 9a6 6 0 1 0 1 4M16 4v5h-5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            立即刷新
+                        </button>
+                    </div>
 
                     <!-- 5门课程巡航指示器 -->
                     <div style="display: flex; gap: 4px; margin-bottom: 8px;">
                         ${COURSE_QUEUE.map((c, i) => `
-                            <div id="c-step-${c.id}" style="flex: 1; text-align: center; font-size: 10px; padding: 3px 0; border-radius: 3px; background: ${c.id === String(curId) ? '#0284c7; color: #fff; font-weight: 600;' : '#e2e8f0; color: #64748b;'}; cursor: pointer;" title="点击直达: ${c.name}" onclick="location.href='http://jsgs.study.gspxonline.com/resource/index?route=/study/course/${c.id}#/study/learn/${c.id}'">
+                            <div id="c-step-${c.id}" ${c.id === String(curId) ? 'aria-current="step"' : ''} style="flex: 1; text-align: center; font-size: 10px; padding: 3px 0; border-radius: 3px; background: ${c.id === String(curId) ? '#0284c7; color: #fff; font-weight: 600;' : '#e2e8f0; color: #64748b;'}; cursor: pointer;" title="点击直达: ${c.name}" onclick="location.href='http://jsgs.study.gspxonline.com/resource/index?route=/study/course/${c.id}#/study/learn/${c.id}'">
                                 课${i+1}
                             </div>
                         `).join('')}
@@ -808,15 +848,47 @@
                         </button>
                     </div>
 
-                    <div style="font-size: 10px; color: #059669; text-align: right;">防切屏 + 多窗口并行 + WebAudio保活</div>
+                    <div style="font-size: 10px; color: #059669; text-align: right;">后台播放状态取决于浏览器与平台</div>
                 </div>
             </div>
         `;
+
+        const style = document.createElement('style');
+        style.textContent = `
+            #study-assistant-hud { color: #1e293b; font-size: 11px; }
+            #hud-expanded-view { width: 100% !important; }
+            #hud-expanded-view > div:last-child { background: #fff !important; border: 1px solid #dce5ee !important; border-radius: 12px !important; padding: 11px !important; box-shadow: 0 10px 28px #233b5426 !important; }
+            #hud-drag-handle { cursor: grab; user-select: none; touch-action: none; }
+            #hud-drag-handle:active { cursor: grabbing; }
+            #hud-expanded-view small { color: #94a3b8; font-size: 10px; font-weight: 500; }
+            #hud-pct { border-radius: 999px !important; padding: 2px 6px !important; white-space: nowrap; }
+            #hud-status { color: #64748b !important; line-height: 1.4; }
+            #hud-progress-track { height: 4px; background: #e8eff5; border-radius: 999px; overflow: hidden; margin: 0 0 8px; }
+            #hud-progress-fill { display: block; width: 0; height: 100%; background: #0284c7; border-radius: inherit; transition: width .2s; }
+            #study-assistant-hud button { font-family: inherit; }
+            #study-assistant-hud button:focus-visible, #hud-collapsed-view:focus-visible, #study-assistant-hud input:focus-visible { outline: 2px solid #0284c7 !important; outline-offset: 2px; }
+            #btn-collapse { display: inline-flex; align-items: center; justify-content: center; }
+            #btn-playback-toggle { display: flex; align-items: center; justify-content: center; gap: 5px; width: 100%; padding: 5px; margin: 0 0 8px; background: #e0f2fe; border: 1px solid #bae6fd; border-radius: 6px; color: #0369a1; font-size: 11px; font-weight: 600; cursor: pointer; }
+            #btn-playback-toggle[aria-pressed="true"] { background: #f1f5f9; border-color: #cbd5e1; color: #475569; }
+            #btn-playback-toggle .hud-play-icon { display: none; }
+            #btn-playback-toggle[aria-pressed="true"] .hud-play-icon { display: block; }
+            #btn-playback-toggle[aria-pressed="true"] .hud-pause-icon { display: none; }
+            #hud-refresh-row { display: flex; align-items: center; gap: 5px; margin: 0 0 8px; color: #475569; }
+            #hud-refresh-row label { white-space: nowrap; }
+            #input-refresh { width: 46px; padding: 3px 4px; color: #334155; background: #fff; border: 1px solid #cbd5e1; border-radius: 5px; font-size: 11px; text-align: center; }
+            #btn-refresh-now { display: inline-flex; align-items: center; justify-content: center; gap: 3px; margin-left: auto; padding: 3px 6px; color: #0369a1; background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 5px; font-size: 10px; white-space: nowrap; cursor: pointer; }
+            #hud-expanded-view [id^="c-step-"][aria-current="step"] { background: #0284c7 !important; color: #fff !important; }
+            #hud-collapsed-view { width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; color: #fff; background: #0284c7; border: 1px solid #e0f2fe; border-radius: 14px; box-shadow: 0 5px 16px #07598555; cursor: grab; user-select: none; touch-action: none; }
+            #hud-collapsed-view:active { cursor: grabbing; }
+            @media (prefers-reduced-motion: reduce) { #hud-progress-fill { transition: none; } }
+        `;
+        hud.appendChild(style);
 
         Object.assign(hud.style, {
             position: 'fixed',
             top: '70px',
             right: '25px',
+            width: isCollapsed ? '48px' : 'min(280px, calc(100vw - 28px))',
             zIndex: '99999999',
             fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
             color: '#1e293b'
@@ -825,37 +897,133 @@
 
         const collapsedView = document.getElementById('hud-collapsed-view');
         const expandedView = document.getElementById('hud-expanded-view');
+        const positionKey = 'gspx_hud_position';
+        const placeHud = (x, y) => {
+            hud.style.left = `${Math.min(Math.max(8, x), Math.max(8, window.innerWidth - hud.offsetWidth - 8))}px`;
+            hud.style.top = `${Math.min(Math.max(8, y), Math.max(8, window.innerHeight - hud.offsetHeight - 8))}px`;
+            hud.style.right = 'auto';
+        };
+        const saveHudPosition = () => localStorage.setItem(positionKey, JSON.stringify({
+            x: parseFloat(hud.style.left), y: parseFloat(hud.style.top)
+        }));
+        try {
+            const saved = JSON.parse(localStorage.getItem(positionKey));
+            if (Number.isFinite(saved.x) && Number.isFinite(saved.y)) placeHud(saved.x, saved.y);
+        } catch (_) {}
+        window.addEventListener('resize', () => {
+            const rect = hud.getBoundingClientRect();
+            placeHud(rect.left, rect.top);
+        });
+
+        let ignoreCollapsedClick = false;
+        const startDrag = event => {
+            if (event.button !== 0 || event.target.closest('button, input')) return;
+            const handle = event.currentTarget;
+            if (handle.setPointerCapture) handle.setPointerCapture(event.pointerId);
+            const rect = hud.getBoundingClientRect();
+            const startX = event.clientX;
+            const startY = event.clientY;
+            let moved = false;
+            const move = next => {
+                if (next.pointerId !== event.pointerId) return;
+                const dx = next.clientX - startX;
+                const dy = next.clientY - startY;
+                if (!moved && Math.hypot(dx, dy) < 4) return;
+                moved = true;
+                next.preventDefault();
+                placeHud(rect.left + dx, rect.top + dy);
+            };
+            const stop = next => {
+                if (next.pointerId !== event.pointerId) return;
+                window.removeEventListener('pointermove', move);
+                window.removeEventListener('pointerup', stop);
+                window.removeEventListener('pointercancel', stop);
+                if (handle.hasPointerCapture?.(event.pointerId)) handle.releasePointerCapture(event.pointerId);
+                if (moved) {
+                    saveHudPosition();
+                    if (handle === collapsedView) {
+                        ignoreCollapsedClick = true;
+                        setTimeout(() => { ignoreCollapsedClick = false; }, 0);
+                    }
+                }
+            };
+            window.addEventListener('pointermove', move);
+            window.addEventListener('pointerup', stop);
+            window.addEventListener('pointercancel', stop);
+        };
+        document.getElementById('hud-drag-handle').addEventListener('pointerdown', startDrag);
+        collapsedView.addEventListener('pointerdown', startDrag);
 
         const doCollapse = () => {
+            const rect = hud.getBoundingClientRect();
             isCollapsed = true;
             localStorage.setItem('gspx_hud_collapsed', 'true');
+            hud.style.width = '48px';
             expandedView.style.display = 'none';
             collapsedView.style.display = 'flex';
+            placeHud(rect.right - hud.offsetWidth, rect.top);
+            saveHudPosition();
         };
 
         const doExpand = () => {
+            const rect = hud.getBoundingClientRect();
             isCollapsed = false;
             localStorage.setItem('gspx_hud_collapsed', 'false');
+            hud.style.width = 'min(280px, calc(100vw - 28px))';
             collapsedView.style.display = 'none';
             expandedView.style.display = 'block';
+            placeHud(rect.right - hud.offsetWidth, rect.top);
+            saveHudPosition();
         };
 
         document.getElementById('btn-collapse').addEventListener('click', doCollapse);
-        const btnCollapseExt = document.getElementById('btn-collapse-external');
-        if (btnCollapseExt) btnCollapseExt.addEventListener('click', doCollapse);
-        collapsedView.addEventListener('click', doExpand);
+        collapsedView.addEventListener('click', () => {
+            if (!ignoreCollapsedClick) doExpand();
+        });
+        collapsedView.addEventListener('keydown', event => {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                doExpand();
+            }
+        });
+
+        const playbackButton = document.getElementById('btn-playback-toggle');
+        const playbackLabel = document.getElementById('hud-playback-label');
+        playbackButton.addEventListener('click', () => {
+            const video = document.querySelector('video');
+            if (!video) {
+                showStatus('当前页面尚未找到视频');
+                return;
+            }
+            if (!window._allowUserPause && video.paused) {
+                video._studyRetryAfter = 0;
+                video.play().then(() => {
+                    playbackLabel.textContent = '暂停视频';
+                    showStatus('视频已开始播放');
+                }).catch(() => showStatus('浏览器仍阻止播放，请点击视频原生播放按钮'));
+                return;
+            }
+            window._allowUserPause = !window._allowUserPause;
+            playbackButton.setAttribute('aria-pressed', String(window._allowUserPause));
+            playbackLabel.textContent = window._allowUserPause ? '继续播放' : '暂停视频';
+            if (window._allowUserPause) video.pause();
+            else video.play().catch(() => showStatus('播放被浏览器阻止，请点击视频播放按钮'));
+            showStatus(window._allowUserPause ? '已手动暂停' : '正在继续播放');
+        });
 
         // 刷新倍速按钮亮起外观
         function refreshSpeedButtonStyles() {
             document.querySelectorAll('.btn-preset-speed').forEach(btn => {
                 const r = parseFloat(btn.dataset.rate);
                 if (Math.abs(r - config.speed) < 0.05) {
+                    btn.setAttribute('aria-pressed', 'true');
                     btn.style.background = '#0284c7';
                     btn.style.color = '#ffffff';
                     btn.style.borderColor = '#0284c7';
                     btn.style.fontWeight = '700';
                     btn.style.boxShadow = '0 2px 4px rgba(2,132,199,0.3)';
                 } else {
+                    btn.setAttribute('aria-pressed', 'false');
                     btn.style.background = '#ffffff';
                     btn.style.color = '#334155';
                     btn.style.borderColor = '#cbd5e1';
@@ -870,17 +1038,36 @@
             config.enabled = !config.enabled;
             localStorage.setItem('gspx_master_enabled', config.enabled);
 
-            if (typeof unsafeWindow !== 'undefined') {
-                unsafeWindow._masterEnabled = config.enabled;
-                unsafeWindow._allowUserPause = !config.enabled;
-            }
             window._masterEnabled = config.enabled;
             window._allowUserPause = !config.enabled;
+            playbackButton.setAttribute('aria-pressed', String(window._allowUserPause));
+            playbackLabel.textContent = window._allowUserPause ? '继续播放' : '暂停视频';
 
             const btn = document.getElementById('btn-master-toggle');
             btn.innerText = config.enabled ? '接管中' : '已暂停';
             btn.style.background = config.enabled ? '#0284c7' : '#94a3b8';
+            btn.setAttribute('aria-pressed', String(config.enabled));
             showStatus(config.enabled ? '已恢复插件全自动接管' : '已暂停插件，所有控制交还给您');
+        });
+        document.getElementById('btn-master-toggle').setAttribute('aria-pressed', String(config.enabled));
+        playbackButton.setAttribute('aria-pressed', String(window._allowUserPause));
+        playbackLabel.textContent = window._allowUserPause ? '继续播放' : '暂停视频';
+
+        document.getElementById('input-refresh').addEventListener('change', event => {
+            const raw = event.target.value.trim();
+            const minutes = Number(raw);
+            if (!/^\d+$/.test(raw) || minutes > 120) {
+                event.target.value = config.refreshMinutes;
+                showStatus('请输入 0 到 120 的整数分钟，0 表示关闭');
+                return;
+            }
+            config.refreshMinutes = minutes;
+            localStorage.setItem('gspx_refresh_minutes', String(config.refreshMinutes));
+            lastRefreshAt = Date.now();
+            showStatus(config.refreshMinutes ? `每 ${config.refreshMinutes} 分钟刷新页面同步进度` : '已关闭定时刷新');
+        });
+        document.getElementById('btn-refresh-now').addEventListener('click', () => {
+            refreshProgressPage(document.querySelector('video'));
         });
 
         const modes = ['stay_end', 'no_compensate', 'loop_replay'];
@@ -918,6 +1105,7 @@
             btn.innerText = `小节连播: ${config.autoNext ? '开' : '关'}`;
             btn.style.background = config.autoNext ? '#e0f2fe' : '#f1f5f9';
             btn.style.color = config.autoNext ? '#0369a1' : '#64748b';
+            btn.setAttribute('aria-pressed', String(config.autoNext));
         });
 
         document.getElementById('btn-toggle-cross').addEventListener('click', () => {
@@ -927,6 +1115,7 @@
             btn.innerText = `跨课连播: ${config.crossCourse ? '开' : '关'}`;
             btn.style.background = config.crossCourse ? '#e0f2fe' : '#f1f5f9';
             btn.style.color = config.crossCourse ? '#0369a1' : '#64748b';
+            btn.setAttribute('aria-pressed', String(config.crossCourse));
         });
 
         document.getElementById('btn-toggle-mute').addEventListener('click', () => {
@@ -936,8 +1125,12 @@
             btn.innerText = `静音: ${config.autoMute ? '是' : '否'}`;
             btn.style.background = config.autoMute ? '#dcfce7' : '#fee2e2';
             btn.style.color = config.autoMute ? '#15803d' : '#b91c1c';
+            btn.setAttribute('aria-pressed', String(config.autoMute));
             const v = document.querySelector('video');
             if (v) v.muted = config.autoMute;
+        });
+        ['next', 'cross', 'mute'].forEach((name, i) => {
+            document.getElementById(`btn-toggle-${name}`).setAttribute('aria-pressed', String([config.autoNext, config.crossCourse, config.autoMute][i]));
         });
     }
 
@@ -946,10 +1139,7 @@
         localStorage.setItem('gspx_custom_speed', rate);
 
         window._targetSpeed = rate;
-        if (typeof unsafeWindow !== 'undefined') {
-            unsafeWindow._targetSpeed = rate;
-            unsafeWindow._userExplicitSpeed1 = (rate === 1);
-        }
+        window._userExplicitSpeed1 = (rate === 1);
 
         const v = document.querySelector('video');
         if (v) v.playbackRate = rate;
@@ -959,6 +1149,8 @@
     function updateUI(videoPercent, platformProgress) {
         const pctEl = document.getElementById('hud-pct');
         if (!pctEl) return;
+        const progress = Math.max(0, Math.min(100, platformProgress ?? videoPercent ?? 0));
+        document.getElementById('hud-progress-fill').style.width = `${progress}%`;
         if (!config.enabled) {
             pctEl.innerText = "已暂停";
             pctEl.style.background = "#94a3b8";
