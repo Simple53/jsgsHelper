@@ -1,11 +1,13 @@
 // ==UserScript==
 // @name         江苏高校岗培 - 学习播放助手(V5.0)
 // @namespace    https://github.com/Simple53/jsgsHelper
-// @version      5.0.0
-// @description  支持不同账号使用：当前课程自动播放、文件翻页、可配置跨课队列、进度刷新与紧凑悬浮控制面板
+// @version      5.0.1
+// @description  五门课程默认连播、文件翻页、进度刷新与紧凑悬浮控制面板；支持不同账号使用
 // @author       Simple53
 // @match        *://jsgs.study.gspxonline.com/*
 // @match        *://*.gspxonline.com/*
+// @updateURL    https://raw.githubusercontent.com/Simple53/jsgsHelper/main/auto_study_assistant.user.js
+// @downloadURL  https://raw.githubusercontent.com/Simple53/jsgsHelper/main/auto_study_assistant.user.js
 // @run-at       document-start
 // @grant        none
 // ==/UserScript==
@@ -388,15 +390,23 @@
     })();
 
     // =========================================================================
-    // 1. 跨课队列只保存在当前标签会话，不读取或保存账号凭据
+    // 1. 默认课程队列；用户可在当前标签会话覆盖，不读取或保存账号凭据
     // =========================================================================
     const courseQueueKey = 'gspx_course_queue_v5';
+    const DEFAULT_COURSES = [
+        { id: '991', name: '高等教育学' },
+        { id: '1088', name: '高等教育心理学' },
+        { id: '1072', name: '高等教育政策与法律' },
+        { id: '993', name: '高校教师职业道德规范' },
+        { id: '994', name: '习近平总书记教育重要论述' }
+    ];
     function parseCourseQueue(value) {
         const ids = String(value || '').split(/[，,\s]+/).filter(Boolean);
         return ids.length <= 30 && ids.every(id => /^\d{1,10}$/.test(id))
-            ? [...new Set(ids)].map(id => ({ id, name: `课程 ${id}` })) : null;
+            ? [...new Set(ids)].map(id => DEFAULT_COURSES.find(course => course.id === id) || { id, name: `课程 ${id}` }) : null;
     }
-    let COURSE_QUEUE = parseCourseQueue(sessionStorage.getItem(courseQueueKey)) || [];
+    const storedQueue = sessionStorage.getItem(courseQueueKey);
+    let COURSE_QUEUE = storedQueue === null ? DEFAULT_COURSES : (parseCourseQueue(storedQueue) || DEFAULT_COURSES);
 
     const storedRefresh = localStorage.getItem('gspx_refresh_minutes');
     const config = {
@@ -413,6 +423,7 @@
 
     let checkTimer = null;
     let isNavigating = false;
+    let listStartTimer = null;
     let lastRefreshAt = Date.now();
     let documentPageKey = '';
     let documentPageSince = 0;
@@ -593,7 +604,19 @@
     }
 
     function handleCourseListPage() {
-        showStatus('请从学习大厅打开已报名课程；跨课连播可在面板配置课程 ID');
+        if (!COURSE_QUEUE.length) {
+            showStatus('请打开已报名课程，或在面板配置跨课顺序');
+            return;
+        }
+        if (listStartTimer) return;
+        const startHash = window.location.hash || '';
+        showStatus(`课程大厅：3 秒后进入《${COURSE_QUEUE[0].name}》`);
+        listStartTimer = setTimeout(() => {
+            listStartTimer = null;
+            if (!config.enabled || document.querySelector('video') || (window.location.hash || '') !== startHash) return;
+            const id = COURSE_QUEUE[0].id;
+            window.location.href = `https://jsgs.study.gspxonline.com/resource/index?route=/study/course/${id}#/study/learn/${id}`;
+        }, 3000);
     }
 
     function handleLearnPage() {
@@ -850,9 +873,9 @@
             <!-- 折叠图标：展开的课本与播放标记 -->
             <div id="hud-collapsed-view" role="button" tabindex="0" aria-label="展开学习播放助手" style="display: ${isCollapsed ? 'flex' : 'none'};" title="点击展开，拖动可移动">
                 <svg viewBox="0 0 32 32" width="27" height="27" fill="none" aria-hidden="true">
-                    <path d="M5 8.5c4-1.4 7.5-.9 11 1.5 3.5-2.4 7-2.9 11-1.5v16c-4-1.4-7.5-.9-11 1.5-3.5-2.4-7-2.9-11-1.5v-16Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
-                    <path d="M16 10v16" stroke="currentColor" stroke-width="1.8"/>
-                    <path d="m20 13.5 4.5 3.5-4.5 3.5v-7Z" fill="currentColor"/>
+                    <path d="M4.5 9c4.3-1.3 7.9-.7 11.5 1.7C19.6 8.3 23.2 7.7 27.5 9v15.1c-4.3-1.3-7.9-.7-11.5 1.7-3.6-2.4-7.2-3-11.5-1.7V9Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+                    <path d="M16 10.7v15.1" stroke="currentColor" stroke-width="1.8"/>
+                    <path d="m19.5 13.3 5 3.7-5 3.7v-7.4Z" fill="currentColor"/>
                 </svg>
             </div>
 

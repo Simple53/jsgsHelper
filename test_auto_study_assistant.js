@@ -70,9 +70,10 @@ const context = {
 };
 
 async function check() {
-    sessionValues.set('gspx_course_queue_v5', '991,1088,1072');
     vm.runInNewContext(instrumentedSource, context);
     assert.equal(window._studyAssistantReady, true, 'page context must install its guard');
+    assert.equal(window.__studyTest.parseCourseQueue('991,1088,1072,993,994').map(course => course.id).join(','), '991,1088,1072,993,994', 'all default courses remain available');
+    assert.equal(window.__studyTest.parseCourseQueue('').length, 0, 'users can disable the cross-course queue');
     assert.equal(window.__studyTest.parseCourseQueue('2001, 2002').map(course => course.id).join(','), '2001,2002', 'another account can configure its own courses');
     assert.equal(window.__studyTest.parseCourseQueue('2001,invalid'), null, 'invalid course IDs must be rejected');
     assert.equal(window.__studyTest.config.refreshMinutes, 5, 'first run should refresh every five minutes');
