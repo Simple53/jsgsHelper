@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         江苏高校岗培 - 全自动跨课连播与多窗口学习助手(V4.1)
+// @name         江苏高校岗培 - 学习播放助手(V5.0)
 // @namespace    https://github.com/Simple53/jsgsHelper
-// @version      4.1.0
-// @description  彻底终结切屏/失焦/最小化暂停(EventTarget级拦截+捕获阶段阻断+WebAudio保活)、支持多窗口同时学习、定时同步进度、解除进度条拖动限制、自由倍速、5门课程自动跨课连播
+// @version      5.0.0
+// @description  支持不同账号使用：当前课程自动播放、文件翻页、可配置跨课队列、进度刷新与紧凑悬浮控制面板
 // @author       Simple53
 // @match        *://jsgs.study.gspxonline.com/*
 // @match        *://*.gspxonline.com/*
@@ -12,7 +12,7 @@
 
 (function () {
     'use strict';
-    console.log("[jsgsHelper V4.1] 学习助手已加载...");
+    console.log("[jsgsHelper V5.0] 学习助手已加载...");
 
     // =========================================================================
     // 0. 主页面上下文核心注入：从底层彻底阻断切屏暂停 + 多窗口冲突
@@ -22,7 +22,10 @@
 
         window._masterEnabled = localStorage.getItem('gspx_master_enabled') !== 'false';
         window._targetSpeed = parseFloat(localStorage.getItem('gspx_custom_speed') || '1.0');
-        window._allowUserPause = !window._masterEnabled;
+        var refreshState = null;
+        try { refreshState = JSON.parse(sessionStorage.getItem('gspx_refresh_resume')); } catch (_) {}
+        window._allowUserPause = !window._masterEnabled || !!(refreshState && refreshState.manualPause &&
+            Date.now() - refreshState.at < 30000);
         window._isSeeking = false;
         window._tabId = 'tab_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
 
@@ -322,6 +325,9 @@
         // =============================================================
         // 核心突破 10：高频心跳守护定时器
         // =============================================================
+        var watchedVideo = null;
+        var lastVideoTime = 0;
+        var lastAdvanceAt = Date.now();
         setInterval(function() {
             var v = document.querySelector('video');
             if (!v) return;
@@ -344,6 +350,19 @@
             unlockSeekAndNeutralizeConflict();
 
             if (!window._masterEnabled) return;
+
+            // 后台可能出现 paused=false、但时间轴已停止的假播放状态。
+            if (v !== watchedVideo || Math.abs(v.currentTime - lastVideoTime) > 0.25) {
+                watchedVideo = v;
+                lastVideoTime = v.currentTime;
+                lastAdvanceAt = Date.now();
+            } else if (!v.paused && !v.ended && !window._allowUserPause && !window._isSeeking &&
+                v.readyState >= 2 && v.currentTime < (v.duration || Infinity) - 0.8 &&
+                Date.now() - lastAdvanceAt > 15000) {
+                lastAdvanceAt = Date.now();
+                origPause.call(v);
+                window._studyAssistantPlay?.(v);
+            }
 
             if (window._targetSpeed && Math.abs(v.playbackRate - window._targetSpeed) > 0.05) {
                 if (origDesc && origDesc.set) origDesc.set.call(v, window._targetSpeed);
@@ -369,15 +388,15 @@
     })();
 
     // =========================================================================
-    // 1. 5 门官方培训核心考试课程标准队列
+    // 1. 跨课队列只保存在当前标签会话，不读取或保存账号凭据
     // =========================================================================
-    const COURSE_QUEUE = [
-        { id: "991", name: "高等教育学" },
-        { id: "1088", name: "高等教育心理学" },
-        { id: "1072", name: "高等教育政策与法律" },
-        { id: "993", name: "高校教师职业道德规范" },
-        { id: "994", name: "习近平总书记教育重要论述" }
-    ];
+    const courseQueueKey = 'gspx_course_queue_v5';
+    function parseCourseQueue(value) {
+        const ids = String(value || '').split(/[，,\s]+/).filter(Boolean);
+        return ids.length <= 30 && ids.every(id => /^\d{1,10}$/.test(id))
+            ? [...new Set(ids)].map(id => ({ id, name: `课程 ${id}` })) : null;
+    }
+    let COURSE_QUEUE = parseCourseQueue(sessionStorage.getItem(courseQueueKey)) || [];
 
     const storedRefresh = localStorage.getItem('gspx_refresh_minutes');
     const config = {
@@ -394,20 +413,22 @@
 
     let checkTimer = null;
     let isNavigating = false;
-    let listCountdown = 3;
-    let listCountdownTimer = null;
     let lastRefreshAt = Date.now();
+    let documentPageKey = '';
+    let documentPageSince = 0;
+    let documentLastClick = 0;
+    let documentFinished = false;
     const refreshResumeKey = 'gspx_refresh_resume';
 
     function getCurrentCourseId() {
         const hash = window.location.hash || '';
         const search = window.location.search || '';
-        const match = hash.match(/\/learn\/(\d+)/) || search.match(/courseId=(\d+)/);
+        const match = hash.match(/\/learn\/(\d+)/) || search.match(/courseId=(\d+)/) || search.match(/\/course\/(\d+)/);
         return match ? match[1] : null;
     }
 
     function restorePlaybackPosition(video) {
-        if (video._studyPositionChecked || video.readyState < 1) return;
+        if (video._studyPositionChecked || video.readyState < 1 || !Number.isFinite(video.duration) || video.duration <= 0) return;
         video._studyPositionChecked = true;
         try {
             const saved = JSON.parse(sessionStorage.getItem(refreshResumeKey));
@@ -441,7 +462,8 @@
         try {
             if (video && Number.isFinite(video.currentTime)) {
                 sessionStorage.setItem(refreshResumeKey, JSON.stringify({
-                    courseId: getCurrentCourseId(), time: video.currentTime, at: Date.now()
+                    courseId: getCurrentCourseId(), time: video.currentTime,
+                    at: Date.now(), manualPause: window._allowUserPause
                 }));
             } else {
                 sessionStorage.removeItem(refreshResumeKey);
@@ -477,37 +499,104 @@
             return;
         }
 
+        if (!document.querySelector('video') && handleDocumentPage()) return;
+
         handleLearnPage();
     }
 
-    function handleCourseListPage() {
-        if (isNavigating) return;
-
-        const firstCourse = COURSE_QUEUE[0];
-        showStatus(`检测到在课程大厅，${listCountdown} 秒后自动开启第 1 门课程...`);
-
-        if (!listCountdownTimer) {
-            listCountdownTimer = setInterval(() => {
-                listCountdown--;
-                if (listCountdown <= 0) {
-                    clearInterval(listCountdownTimer);
-                    listCountdownTimer = null;
-                    isNavigating = true;
-                    showStatus(`正在跳转至第 1 门:《${firstCourse.name}》...`);
-                    window.location.href = `http://jsgs.study.gspxonline.com/resource/index?route=/study/course/${firstCourse.id}#/study/learn/${firstCourse.id}`;
-                } else {
-                    showStatus(`检测到在课程大厅，${listCountdown} 秒后自动开启第 1 门课程...`);
-                }
-            }, 1000);
+    function getDocumentPage() {
+        const inReaderHeader = el => {
+            const rect = el.getBoundingClientRect();
+            return rect.width > 0 && rect.left < window.innerWidth * 0.5 && rect.top < window.innerHeight * 0.35;
+        };
+        for (const input of document.querySelectorAll('input')) {
+            if (!inReaderHeader(input)) continue;
+            const current = Number(input.value);
+            const text = input.parentElement?.parentElement?.innerText || input.parentElement?.innerText || '';
+            const total = Number(text.match(/\/\s*(\d+)/)?.[1]);
+            if (current >= 1 && total >= current && total <= 1000) return { current, total };
         }
+        for (const el of document.querySelectorAll('span, div')) {
+            if (!inReaderHeader(el) || el.children.length > 2) continue;
+            const match = (el.innerText || '').trim().match(/^(\d+)\s*\/\s*(\d+)$/);
+            if (match && Number(match[1]) >= 1 && Number(match[2]) >= Number(match[1])) {
+                return { current: Number(match[1]), total: Number(match[2]) };
+            }
+        }
+        return null;
+    }
+
+    function getDocumentNextButton() {
+        return Array.from(document.querySelectorAll('button, [role="button"], [title], [aria-label], [class]')).find(el => {
+            if (el.closest('#study-assistant-hud')) return false;
+            const rect = el.getBoundingClientRect();
+            if (rect.width < 12 || rect.width > 90 || rect.height < 12 || rect.height > 90 ||
+                rect.left < window.innerWidth * 0.4 || rect.right > window.innerWidth * 0.75 ||
+                rect.top < window.innerHeight * 0.25 || rect.top > window.innerHeight * 0.8) return false;
+            const label = ['title', 'aria-label', 'class'].map(name => el.getAttribute(name) || '').join(' ');
+            return /下一页|next|arrow.?right|chevron.?right|right.?arrow|icon-right|btn-right/i.test(label) ||
+                /^[→›]$/.test((el.textContent || '').trim());
+        });
+    }
+
+    function handleDocumentPage() {
+        const page = getDocumentPage();
+        if (!page) return false;
+        const items = getLessonItems();
+        const active = items.find(isActiveLesson);
+        const key = `${active?.innerText || ''}:${page.current}/${page.total}`;
+        if (key !== documentPageKey) {
+            documentPageKey = key;
+            documentPageSince = Date.now();
+            documentLastClick = 0;
+        }
+        updateUI(page.current / page.total * 100, getCurrentLessonPlatformProgress(), '文件');
+        if (!config.autoNext || isNavigating || Date.now() - documentPageSince < 8000 ||
+            Date.now() - documentLastClick < 8000) return true;
+
+        if (page.current < page.total) {
+            const next = getDocumentNextButton();
+            if (!next) {
+                showStatus('未识别文件下一页按钮，请手动翻页');
+                return true;
+            }
+            documentLastClick = Date.now();
+            next.click();
+            showStatus(`文件阅读：正在翻至第 ${page.current + 1}/${page.total} 页`);
+            return true;
+        }
+
+        if (!items.length) {
+            showStatus('文件已到末页，等待平台记录进度');
+            return true;
+        }
+        if (isAllLessonsFinished(items)) {
+            if (!documentFinished) {
+                documentFinished = true;
+                isNavigating = true;
+                handleCrossCourseNext();
+            }
+            return true;
+        }
+        const activeIndex = items.indexOf(active);
+        const incomplete = el => parseFloat((el.innerText || '').match(/(\d+(?:\.\d+)?)\s*%/)?.[1] || '0') < 100;
+        const next = items.slice(activeIndex + 1).find(incomplete) || items.find(incomplete);
+        if (next && next !== active) {
+            documentLastClick = Date.now();
+            next.scrollIntoView({ block: 'center' });
+            next.click();
+            showStatus('文件已翻到末页，正在打开下一份未完成文件');
+        } else {
+            showStatus('文件已到末页，等待平台记录进度');
+        }
+        return true;
+    }
+
+    function handleCourseListPage() {
+        showStatus('请从学习大厅打开已报名课程；跨课连播可在面板配置课程 ID');
     }
 
     function handleLearnPage() {
-        if (listCountdownTimer) {
-            clearInterval(listCountdownTimer);
-            listCountdownTimer = null;
-        }
-
         const video = document.querySelector('video');
         if (!video) {
             showStatus('等待课程视频加载…');
@@ -544,18 +633,25 @@
         return m ? parseFloat(m[1]) : (text.includes('100%') ? 100 : null);
     }
 
-    function getActiveLessonElement() {
-        const allItems = Array.from(document.querySelectorAll('li, div, a')).filter(el => {
-            const t = el.innerText || '';
-            const hasKeyword = t.includes('节') || t.includes('讲') || t.includes('%');
-            const isLeaf = el.children.length <= 4 && el.offsetHeight > 0;
-            return isLeaf && hasKeyword;
-        });
+    function getLessonItems() {
+        const isProgressItem = el => el.offsetHeight > 0 &&
+            !el.closest('#study-assistant-hud') && /\d+(?:\.\d+)?\s*%/.test(el.innerText || '');
+        // 优先使用列表项作为课时行，避免把课时内部的进度文字重复算作下一节。
+        const listItems = Array.from(document.querySelectorAll('li')).filter(isProgressItem)
+            .filter(el => !Array.from(el.querySelectorAll('li')).some(isProgressItem));
+        if (listItems.length) return listItems;
+        const items = Array.from(document.querySelectorAll('div, a')).filter(isProgressItem);
+        return items.filter(el => !items.some(child => child !== el && el.contains(child)));
+    }
 
-        return allItems.find(el => {
-            const cls = (el.className || '') + ' ' + (el.parentElement ? el.parentElement.className : '');
-            return cls.includes('active') || cls.includes('current') || cls.includes('selected');
-        });
+    function isActiveLesson(el) {
+        const activeClass = node => /(?:^|\s)(?:active|current|selected)(?:\s|$)/.test(String(node && node.className || ''));
+        return activeClass(el) || activeClass(el.parentElement) ||
+            Array.from(el.querySelectorAll('[class]')).some(activeClass);
+    }
+
+    function getActiveLessonElement() {
+        return getLessonItems().find(isActiveLesson);
     }
 
     // =========================================================================
@@ -628,26 +724,22 @@
     }
 
     function switchToNextLessonOrCourse() {
-        const allItems = Array.from(document.querySelectorAll('li, div, a')).filter(el => {
-            const t = el.innerText || '';
-            const hasKeyword = t.includes('节') || t.includes('讲') || t.includes('%');
-            const isLeaf = el.children.length <= 4 && el.offsetHeight > 0;
-            return isLeaf && hasKeyword;
-        });
-
-        const activeIndex = allItems.findIndex(el => {
-            const cls = (el.className || '') + ' ' + (el.parentElement ? el.parentElement.className : '');
-            return cls.includes('active') || cls.includes('current') || cls.includes('selected');
-        });
-
-        let nextNode = null;
-        if (activeIndex >= 0 && activeIndex < allItems.length - 1) {
-            nextNode = allItems[activeIndex + 1];
-        } else {
-            nextNode = allItems.find(el => !el.innerText.includes('100%'));
+        const allItems = getLessonItems();
+        if (!allItems.length) {
+            showStatus('未找到课时进度，请刷新页面后重试');
+            isNavigating = false;
+            return;
+        }
+        if (isAllLessonsFinished(allItems)) {
+            handleCrossCourseNext();
+            return;
         }
 
-        if (nextNode && !isAllLessonsFinished(allItems)) {
+        const activeIndex = allItems.findIndex(isActiveLesson);
+        const isIncomplete = el => parseFloat((el.innerText || '').match(/(\d+(?:\.\d+)?)\s*%/)?.[1] || '0') < 100;
+        const nextNode = allItems.slice(activeIndex + 1).find(isIncomplete) || allItems.find(isIncomplete);
+
+        if (nextNode) {
             nextNode.scrollIntoView({ behavior: 'smooth', block: 'center' });
             nextNode.click();
 
@@ -667,8 +759,10 @@
 
     function isAllLessonsFinished(items) {
         if (!items || items.length === 0) return false;
-        const uncompleted = items.filter(el => !el.innerText.includes('100%'));
-        return uncompleted.length === 0;
+        return items.every(el => {
+            const progress = (el.innerText || '').match(/(\d+(?:\.\d+)?)\s*%/);
+            return progress && parseFloat(progress[1]) >= 100;
+        });
     }
 
     function handleCrossCourseNext() {
@@ -682,12 +776,12 @@
             setTimeout(() => {
                 window.location.href = `http://jsgs.study.gspxonline.com/resource/index?route=/study/course/${nextCourse.id}#/study/learn/${nextCourse.id}`;
             }, 3000);
-        } else if (curIdx >= COURSE_QUEUE.length - 1) {
-            showStatus("5 门课程所有课时已全部圆满学完！");
+        } else if (curIdx >= 0 && curIdx === COURSE_QUEUE.length - 1) {
+            showStatus("队列中的课程已全部完成！");
             isNavigating = false;
-            alert("【提示】全部 5 门培训课程的视频已全部自动连播学满 100%！");
+            alert("【提示】队列中的课程学习内容已显示 100%！");
         } else {
-            showStatus("本课程已学完。跨课连播已关闭。");
+            showStatus("本课程已学完。跨课连播未配置或已关闭。");
             isNavigating = false;
         }
     }
@@ -739,7 +833,7 @@
     function createUI() {
         if (document.getElementById('study-assistant-hud')) return;
         const curId = getCurrentCourseId();
-        const curCourse = COURSE_QUEUE.find(c => c.id === String(curId)) || COURSE_QUEUE[0];
+        const curCourse = COURSE_QUEUE.find(c => c.id === String(curId)) || { name: curId ? `课程 ${curId}` : '未进入课程' };
 
         const hud = document.createElement('div');
         hud.id = 'study-assistant-hud';
@@ -753,12 +847,12 @@
         let isCollapsed = localStorage.getItem('gspx_hud_collapsed') === 'true';
 
         hud.innerHTML = `
-            <!-- 折叠图标：视频画面与课程进度线 -->
+            <!-- 折叠图标：展开的课本与播放标记 -->
             <div id="hud-collapsed-view" role="button" tabindex="0" aria-label="展开学习播放助手" style="display: ${isCollapsed ? 'flex' : 'none'};" title="点击展开，拖动可移动">
-                <svg viewBox="0 0 32 32" width="26" height="26" fill="none" aria-hidden="true">
-                    <rect x="3.5" y="5.5" width="25" height="21" rx="6" stroke="currentColor" stroke-width="2"/>
-                    <path d="M13 11.5 21 16l-8 4.5v-9Z" fill="currentColor"/>
-                    <path d="M8 24h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                <svg viewBox="0 0 32 32" width="27" height="27" fill="none" aria-hidden="true">
+                    <path d="M5 8.5c4-1.4 7.5-.9 11 1.5 3.5-2.4 7-2.9 11-1.5v16c-4-1.4-7.5-.9-11 1.5-3.5-2.4-7-2.9-11-1.5v-16Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+                    <path d="M16 10v16" stroke="currentColor" stroke-width="1.8"/>
+                    <path d="m20 13.5 4.5 3.5-4.5 3.5v-7Z" fill="currentColor"/>
                 </svg>
             </div>
 
@@ -767,7 +861,7 @@
                 <!-- 内部面板主体 -->
                 <div style="background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 12px; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.18);">
                     <div id="hud-drag-handle" style="margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;" title="按住空白处拖动面板">
-                        <span style="font-weight: 700; font-size: 13px; color: #0284c7;">学习播放助手 <small>V4.1</small></span>
+                        <span style="font-weight: 700; font-size: 13px; color: #0284c7;">学习播放助手 <small>V5.0</small></span>
                         <div style="display: flex; gap: 6px; align-items: center;">
                             <button id="btn-master-toggle" style="padding: 2px 8px; border-radius: 4px; font-size: 11px; cursor: pointer; border: 1px solid #0284c7; background: ${config.enabled ? '#0284c7' : '#94a3b8'}; color: #fff; font-weight: 600;">
                                 ${config.enabled ? '接管中' : '已暂停'}
@@ -780,15 +874,15 @@
 
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
                         <span id="hud-course-name" style="font-size: 11px; color: #1e293b; font-weight: 600;">当前: ${curCourse.name}</span>
-                        <span id="hud-pct" style="background: #059669; color: #fff; padding: 1px 6px; border-radius: 3px; font-size: 10px;">平台:0%</span>
+                        <span id="hud-pct" style="background: #059669; color: #fff; padding: 1px 6px; border-radius: 3px; font-size: 10px;">视频:0% · 平台:0%</span>
                     </div>
 
                     <div id="hud-status" role="status" aria-live="polite" style="font-size: 11px; color: #64748b; margin-bottom: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">正在检测视频状态…</div>
                     <div id="hud-progress-track" aria-hidden="true"><span id="hud-progress-fill"></span></div>
-                    <button id="btn-playback-toggle" type="button" aria-pressed="false">
+                    <button id="btn-playback-toggle" type="button" aria-pressed="${window._allowUserPause}">
                         <svg class="hud-pause-icon" viewBox="0 0 20 20" width="14" height="14" fill="none" aria-hidden="true"><path d="M6 4v12M14 4v12" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>
                         <svg class="hud-play-icon" viewBox="0 0 20 20" width="14" height="14" fill="none" aria-hidden="true"><path d="m6 4 10 6-10 6V4Z" fill="currentColor"/></svg>
-                        <span id="hud-playback-label">暂停视频</span>
+                        <span id="hud-playback-label">${window._allowUserPause ? '继续播放' : '暂停视频'}</span>
                     </button>
                     <div id="hud-refresh-row">
                         <label for="input-refresh">进度刷新</label>
@@ -800,13 +894,17 @@
                         </button>
                     </div>
 
-                    <!-- 5门课程巡航指示器 -->
+                    <div style="display: flex; gap: 4px; align-items: center; margin-bottom: 6px;">
+                        <label for="input-course-queue" style="white-space: nowrap;">跨课顺序</label>
+                        <input id="input-course-queue" type="text" value="${COURSE_QUEUE.map(c => c.id).join(',')}" placeholder="课程ID，如 991,1088" title="按顺序填写已报名课程 ID；仅保存在当前标签会话" style="min-width: 0; flex: 1; padding: 3px 5px; border: 1px solid #cbd5e1; border-radius: 5px; font-size: 10px;">
+                    </div>
+                    <!-- 当前标签会话的跨课队列 -->
                     <div style="display: flex; gap: 4px; margin-bottom: 8px;">
                         ${COURSE_QUEUE.map((c, i) => `
                             <div id="c-step-${c.id}" ${c.id === String(curId) ? 'aria-current="step"' : ''} style="flex: 1; text-align: center; font-size: 10px; padding: 3px 0; border-radius: 3px; background: ${c.id === String(curId) ? '#0284c7; color: #fff; font-weight: 600;' : '#e2e8f0; color: #64748b;'}; cursor: pointer;" title="点击直达: ${c.name}" onclick="location.href='http://jsgs.study.gspxonline.com/resource/index?route=/study/course/${c.id}#/study/learn/${c.id}'">
-                                课${i+1}
+                                ${i+1}
                             </div>
-                        `).join('')}
+                        `).join('') || '<span style="color:#64748b;font-size:10px;">未配置跨课队列，仅接管当前课程</span>'}
                     </div>
 
                     <!-- 补时模式选择与自主配置 -->
@@ -1069,6 +1167,17 @@
         document.getElementById('btn-refresh-now').addEventListener('click', () => {
             refreshProgressPage(document.querySelector('video'));
         });
+        document.getElementById('input-course-queue').addEventListener('change', event => {
+            const parsed = parseCourseQueue(event.target.value.trim());
+            if (!parsed) {
+                event.target.value = COURSE_QUEUE.map(c => c.id).join(',');
+                showStatus('请输入最多 30 个课程 ID，以逗号分隔');
+                return;
+            }
+            COURSE_QUEUE = parsed;
+            sessionStorage.setItem(courseQueueKey, COURSE_QUEUE.map(c => c.id).join(','));
+            showStatus(COURSE_QUEUE.length ? '跨课顺序已保存到当前标签；刷新后生效' : '已清空跨课队列');
+        });
 
         const modes = ['stay_end', 'no_compensate', 'loop_replay'];
         document.getElementById('btn-toggle-compensate').addEventListener('click', () => {
@@ -1146,7 +1255,7 @@
         showStatus(`已设置速度为 ${rate}x`);
     }
 
-    function updateUI(videoPercent, platformProgress) {
+    function updateUI(videoPercent, platformProgress, progressLabel = '视频') {
         const pctEl = document.getElementById('hud-pct');
         if (!pctEl) return;
         const progress = Math.max(0, Math.min(100, platformProgress ?? videoPercent ?? 0));
@@ -1157,10 +1266,10 @@
             return;
         }
         if (platformProgress !== null) {
-            pctEl.innerText = `平台:${Math.floor(platformProgress)}%`;
+            pctEl.innerText = `${progressLabel}:${Math.floor(videoPercent ?? 0)}% · 平台:${Math.floor(platformProgress)}%`;
             pctEl.style.background = platformProgress >= 100 ? '#059669' : '#d97706';
         } else if (videoPercent !== null) {
-            pctEl.innerText = `播放:${Math.floor(videoPercent)}%`;
+            pctEl.innerText = `${progressLabel}:${Math.floor(videoPercent)}%`;
         }
     }
 
