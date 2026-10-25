@@ -72,6 +72,7 @@ const context = {
 async function check() {
     vm.runInNewContext(instrumentedSource, context);
     assert.equal(window._studyAssistantReady, true, 'page context must install its guard');
+    assert.ok(intervals.some(item => item.ms === 1000), 'UI startup must not depend on DOMContentLoaded firing');
     assert.equal(window.__studyTest.parseCourseQueue('991,1088,1072,993,994').map(course => course.id).join(','), '991,1088,1072,993,994', 'all default courses remain available');
     assert.equal(window.__studyTest.parseCourseQueue('').length, 0, 'users can disable the cross-course queue');
     assert.equal(window.__studyTest.parseCourseQueue('2001, 2002').map(course => course.id).join(','), '2001,2002', 'another account can configure its own courses');

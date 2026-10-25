@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         江苏高校岗培 - 学习播放助手(V5.0)
 // @namespace    https://github.com/Simple53/jsgsHelper
-// @version      5.0.1
+// @version      5.0.2
 // @description  五门课程默认连播、文件翻页、进度刷新与紧凑悬浮控制面板；支持不同账号使用
 // @author       Simple53
 // @match        *://jsgs.study.gspxonline.com/*
@@ -1301,15 +1301,11 @@
         if (sEl) sEl.innerText = text;
     }
 
-    if (document.readyState !== 'loading') {
-        createUI();
-        if (checkTimer) clearInterval(checkTimer);
-        checkTimer = setInterval(mainLoop, 1000);
-    } else {
-        window.addEventListener('DOMContentLoaded', () => {
-            createUI();
-            if (checkTimer) clearInterval(checkTimer);
-            checkTimer = setInterval(mainLoop, 1000);
-        });
+    function tick() {
+        if (!document.body) return;
+        if (!document.getElementById('study-assistant-hud')) createUI();
+        mainLoop();
     }
+    tick();
+    checkTimer = setInterval(tick, 1000);
 })();
