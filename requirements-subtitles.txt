@@ -1,3 +1,0 @@
-faster-whisper==1.2.1
-av>=11,<19
-brotlicffi>=1.2.0.2

@@ -1,9 +1,4 @@
-videos/
-_site/
-__pycache__/
-*.pyc
-.env
-.env.*
-config.local.js
-output/
-
+node_modules/
+*.log
+.DS_Store
+Thumbs.db
